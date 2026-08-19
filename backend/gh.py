@@ -274,6 +274,21 @@ def post_inline_comment(number, body, path, line, commit_sha):
     return data["id"]
 
 
+def post_issue_comment(number, body):
+    """Post a general comment on the PR conversation (not tied to a line)."""
+    r = subprocess.run(
+        [
+            "gh", "api", f"repos/{_repo()}/issues/{number}/comments",
+            "-f", f"body={body}",
+        ],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        detail = (r.stderr or "").strip() or (r.stdout or "").strip()
+        raise RuntimeError(f"comment post failed on #{number}: {detail}")
+    return json.loads(r.stdout)["id"]
+
+
 def reply_to_inline_comment(number, comment_id, body):
     """Post `body` as a threaded reply under an existing inline comment.
 

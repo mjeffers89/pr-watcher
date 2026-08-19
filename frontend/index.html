@@ -125,6 +125,82 @@
             <span class="text-xs text-slate-400 ml-2">
               Post sends the technical comment, then the plain one as a reply.
             </span>
+            <button @click="toggleChat(head.number)"
+                    class="ml-auto px-3 py-1.5 text-sm rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50">
+              <span x-text="chatOpenFor === head.number ? 'Close chat' : 'Discuss with Claude'"></span>
+            </button>
+          </div>
+
+          <!-- Per-PR conversation. Claude already has the review; it fetches the
+               diff itself on the first message. -->
+          <div x-show="chatOpenFor === head.number"
+               class="mb-4 rounded-xl border border-slate-300 bg-slate-50 p-4">
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-sm font-medium text-slate-700">Chat about this PR</div>
+              <button @click="resetChat()"
+                      class="text-xs text-slate-500 hover:text-slate-800 underline">Start over</button>
+            </div>
+
+            <div x-show="chatMessages.length === 0" class="text-sm text-slate-500 mb-3">
+              Ask anything about this PR or the findings above. Claude reads the real
+              diff, and can draft a comment for you to post.
+            </div>
+
+            <div class="space-y-3 mb-3">
+              <template x-for="(m, mi) in chatMessages" :key="mi">
+                <div>
+                  <div x-show="m.role === 'user'" class="flex justify-end">
+                    <div class="max-w-[85%] rounded-lg bg-slate-900 text-white px-3 py-2 text-sm whitespace-pre-wrap"
+                         x-text="m.content"></div>
+                  </div>
+                  <div x-show="m.role === 'assistant'" class="space-y-2">
+                    <template x-for="(part, pi) in chatParts(m.content)" :key="pi">
+                      <div>
+                        <div x-show="part.type === 'text'"
+                             class="rounded-lg bg-white border border-slate-200 px-3 py-2 text-sm text-slate-800 leading-relaxed"
+                             x-html="renderMd(part.body)"></div>
+                        <div x-show="part.type === 'post'"
+                             class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                          <div class="text-xs text-blue-800 font-medium mb-1">
+                            Draft comment — this is how it will look on the PR
+                          </div>
+                          <div class="text-sm text-slate-800" x-html="renderMd(part.body)"></div>
+                          <button @click="postFromChat(part.body, mi + '-' + pi)"
+                                  :disabled="posting !== null"
+                                  class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                            <span x-text="posting === (mi + '-' + pi) ? 'Posting…' : 'Post this to the PR'"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+
+            <div x-show="chatBusy" class="flex items-center gap-2 text-sm text-slate-500 mb-2">
+              <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" opacity=".25"/>
+                <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2"/>
+              </svg>
+              Claude is reading the PR…
+            </div>
+
+            <div x-show="chatError" class="text-sm text-red-600 mb-2" x-text="chatError"></div>
+
+            <div class="flex gap-2">
+              <input x-model="chatInput" @keydown.enter="sendChat()"
+                     :disabled="chatBusy"
+                     placeholder="Is finding 4 actually a problem?"
+                     class="flex-1 px-3 py-2 text-sm rounded-md border border-slate-300 disabled:bg-slate-100" />
+              <button @click="sendChat()" :disabled="chatBusy"
+                      class="px-4 py-2 text-sm rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                Send
+              </button>
+            </div>
+            <div class="text-xs text-slate-400 mt-2">
+              Claude cannot post on its own. Anything sent to the PR goes through a button here.
+            </div>
           </div>
           <template x-for="sev in ['critical', 'important', 'suggestion', 'nit']" :key="sev">
             <div x-show="findingsBySev(head, sev).length > 0">
@@ -470,6 +546,136 @@ function app() {
       );
       return all.findIndex(x => x.id === f.id) + 1;
     },
+    // ---- Per-PR Claude chat -------------------------------------------
+    chatOpenFor: null,     // PR number whose chat panel is expanded
+    chatMessages: [],
+    chatInput: '',
+    chatBusy: false,
+    chatError: '',
+    posting: null,         // index of the POST block currently being sent
+
+    async toggleChat(number) {
+      if (this.chatOpenFor === number) { this.chatOpenFor = null; return; }
+      this.chatOpenFor = number;
+      this.chatError = '';
+      this.chatMessages = [];
+      const r = await fetch(`/api/prs/${number}/chat`);
+      if (r.ok) this.chatMessages = (await r.json()).messages;
+    },
+
+    async sendChat() {
+      const msg = this.chatInput.trim();
+      if (!msg || this.chatBusy) return;
+      const number = this.chatOpenFor;
+      this.chatError = '';
+      this.chatInput = '';
+      this.chatMessages.push({ id: 'tmp', role: 'user', content: msg });
+      this.chatBusy = true;
+      try {
+        const r = await fetch(`/api/prs/${number}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.chatError = e.detail || `Request failed (${r.status})`;
+        } else {
+          const data = await r.json();
+          this.chatMessages.push({ id: 'tmp2', role: 'assistant', content: data.reply });
+        }
+      } catch (e) {
+        this.chatError = String(e);
+      } finally {
+        this.chatBusy = false;
+      }
+    },
+
+    async resetChat() {
+      const number = this.chatOpenFor;
+      await fetch(`/api/prs/${number}/chat/reset`, { method: 'POST' });
+      this.chatMessages = [];
+      this.chatError = '';
+    },
+
+    // Minimal markdown for chat replies. Escapes first and only ever emits a
+    // fixed set of tags, so nothing Claude echoes back from a PR body can
+    // inject markup. Deliberately hand-rolled rather than pulling in a parser:
+    // the surface is four constructs, and this way there is no sanitiser to
+    // trust.
+    renderMd(text) {
+      const esc = String(text || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const inline = (t) => t
+        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-slate-100 text-[13px]">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong class="font-semibold">$1</strong>')
+        .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+
+      const out = [];
+      let list = null;
+      const closeList = () => { if (list) { out.push('<ul class="list-disc pl-5 space-y-1 my-2">' + list.join('') + '</ul>'); list = null; } };
+
+      for (const raw of esc.split('\n')) {
+        const line = raw.trimEnd();
+        const h = line.match(/^(#{1,4})\s+(.*)$/);
+        const li = line.match(/^\s*[-*]\s+(.*)$/);
+        if (h) {
+          closeList();
+          out.push('<div class="font-semibold text-slate-900 mt-3 mb-1">' + inline(h[2]) + '</div>');
+        } else if (li) {
+          (list = list || []).push('<li>' + inline(li[1]) + '</li>');
+        } else if (!line.trim()) {
+          closeList();
+        } else {
+          closeList();
+          out.push('<p class="my-1.5">' + inline(line) + '</p>');
+        }
+      }
+      closeList();
+      return out.join('');
+    },
+
+    // Claude wraps anything it wants posted in <POST>...</POST>. Split a reply
+    // into prose and post-blocks so each block can get its own button.
+    chatParts(content) {
+      const parts = [];
+      const re = /<POST>([\s\S]*?)<\/POST>/g;
+      let last = 0, m;
+      while ((m = re.exec(content)) !== null) {
+        if (m.index > last) parts.push({ type: 'text', body: content.slice(last, m.index).trim() });
+        parts.push({ type: 'post', body: m[1].trim() });
+        last = re.lastIndex;
+      }
+      if (last < content.length) parts.push({ type: 'text', body: content.slice(last).trim() });
+      return parts.filter(p => p.body);
+    },
+
+    async postFromChat(body, key) {
+      if (this.posting) return;
+      this.posting = key;
+      this.chatError = '';
+      try {
+        const r = await fetch(`/api/prs/${this.chatOpenFor}/chat/post`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.chatError = e.detail || `Post failed (${r.status})`;
+        } else {
+          this.chatMessages.push({
+            id: 'tmp3', role: 'assistant',
+            content: 'Posted that to the PR.',
+          });
+        }
+      } catch (e) {
+        this.chatError = String(e);
+      } finally {
+        this.posting = null;
+      }
+    },
+
     plainTitle(f) { return f.plain_title || f.title; },
     plainSummary(f) { return f.plain_summary || f.message; },
     plainImpactLabel(f) { return f.plain_impact_label || 'Why it matters'; },

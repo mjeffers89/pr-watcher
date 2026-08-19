@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS prs (
   last_seen_issue_comment_at TEXT,
   pinned_at TEXT,
   parked INTEGER NOT NULL DEFAULT 0,
+  chat_session_id TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
 );
@@ -48,6 +49,17 @@ CREATE TABLE IF NOT EXISTS findings (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- One Claude conversation per PR, opened from the findings list. The session
+-- id is the CLI's own session uuid, so turns resume with full context rather
+-- than replaying the transcript on every message.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pr_number INTEGER NOT NULL REFERENCES prs(number) ON DELETE CASCADE,
+  role TEXT NOT NULL, -- user | assistant
+  content TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,
@@ -65,4 +77,5 @@ CREATE TABLE IF NOT EXISTS activity_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_findings_pr ON findings(pr_number);
+CREATE INDEX IF NOT EXISTS idx_chat_pr ON chat_messages(pr_number);
 CREATE INDEX IF NOT EXISTS idx_prs_status ON prs(status);

@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import config, db, gh, merger, reviewer, watchers
+from . import chat, config, db, gh, merger, reviewer, watchers
 
 FRONTEND = Path(__file__).parent.parent / "frontend"
 
@@ -467,6 +467,56 @@ def _do_approve(number: int, reason: str):
     db.log_action(number, "approved", reason)
     watchers.notify(f"Approved #{number}")
     return {"ok": True}
+
+
+# ---------- Routes: chat ---------------------------------------------------
+class ChatIn(BaseModel):
+    message: str
+
+
+class ChatPostIn(BaseModel):
+    body: str
+
+
+@app.get("/api/prs/{number}/chat")
+async def get_chat(number: int):
+    return {"messages": chat.history(number)}
+
+
+@app.post("/api/prs/{number}/chat")
+async def send_chat(number: int, payload: ChatIn):
+    msg = (payload.message or "").strip()
+    if not msg:
+        raise HTTPException(400, "message is empty")
+    result = await chat.send(number, msg)
+    if not result["ok"]:
+        raise HTTPException(500, result["error"])
+    return result
+
+
+@app.post("/api/prs/{number}/chat/reset")
+async def reset_chat(number: int):
+    chat.reset(number)
+    return {"ok": True}
+
+
+@app.post("/api/prs/{number}/chat/post")
+async def post_from_chat(number: int, payload: ChatPostIn):
+    """Send a body Claude drafted in the chat to the PR as a general comment.
+
+    Claude has no tool that can reach GitHub, so this endpoint is the only path
+    from the conversation to the PR, and it only runs when the user clicks.
+    """
+    body = (payload.body or "").strip()
+    if not body:
+        raise HTTPException(400, "nothing to post")
+    try:
+        cid = gh.post_issue_comment(number, body)
+    except Exception as e:
+        raise HTTPException(500, f"gh post failed: {e}")
+    db.log_action(number, "chat_comment_posted", f"comment {cid}")
+    watchers.notify(f"Posted a chat comment on #{number}")
+    return {"ok": True, "comment_id": cid}
 
 
 # ---------- Routes: findings ----------------------------------------------

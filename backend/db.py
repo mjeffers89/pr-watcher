@@ -19,6 +19,7 @@ _MIGRATIONS = [
     "ALTER TABLE findings ADD COLUMN plain_impact_label TEXT",
     "ALTER TABLE findings ADD COLUMN plain_impact TEXT",
     "ALTER TABLE findings ADD COLUMN plain_body TEXT",
+    "ALTER TABLE prs ADD COLUMN chat_session_id TEXT",
 ]
 
 
