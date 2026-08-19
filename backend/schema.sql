@@ -35,6 +35,14 @@ CREATE TABLE IF NOT EXISTS findings (
   confidence TEXT,
   fix TEXT,
   suggestion_body TEXT, -- full markdown body to post inline
+  -- Plain-English layer. Same finding, retold for a non-technical reader.
+  -- Produced by the same review pass, so no second Claude call.
+  plain_verdict TEXT,     -- Real bug | Your call | Worth tidying | Style point
+  plain_title TEXT,       -- headline with no jargon
+  plain_summary TEXT,     -- what is happening, in one or two sentences
+  plain_impact_label TEXT,-- "Why it matters" or "The decision"
+  plain_impact TEXT,      -- consequence, or the judgement call to make
+  plain_body TEXT,        -- markdown follow-up comment posted under the technical one
   status TEXT NOT NULL DEFAULT 'pending', -- pending | posted | skipped
   github_comment_id INTEGER,
   created_at TEXT DEFAULT (datetime('now'))

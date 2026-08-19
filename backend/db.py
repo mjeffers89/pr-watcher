@@ -13,6 +13,12 @@ _MIGRATIONS = [
     "ALTER TABLE prs ADD COLUMN last_seen_issue_comment_at TEXT",
     "ALTER TABLE prs ADD COLUMN pinned_at TEXT",
     "ALTER TABLE prs ADD COLUMN parked INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE findings ADD COLUMN plain_verdict TEXT",
+    "ALTER TABLE findings ADD COLUMN plain_title TEXT",
+    "ALTER TABLE findings ADD COLUMN plain_summary TEXT",
+    "ALTER TABLE findings ADD COLUMN plain_impact_label TEXT",
+    "ALTER TABLE findings ADD COLUMN plain_impact TEXT",
+    "ALTER TABLE findings ADD COLUMN plain_body TEXT",
 ]
 
 

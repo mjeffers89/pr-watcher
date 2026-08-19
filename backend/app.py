@@ -59,6 +59,12 @@ class FindingIn(BaseModel):
     confidence: str | None = None
     fix: str | None = None
     suggestion_body: str | None = None
+    plain_verdict: str | None = None
+    plain_title: str | None = None
+    plain_summary: str | None = None
+    plain_impact_label: str | None = None
+    plain_impact: str | None = None
+    plain_body: str | None = None
 
 
 # ---------- Queries --------------------------------------------------------
@@ -213,10 +219,14 @@ def add_findings(number: int, items: list[FindingIn]):
             c.execute(
                 """INSERT INTO findings
                    (pr_number, severity, file, line, title, message,
-                    code_snippet, blast_radius, confidence, fix, suggestion_body)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    code_snippet, blast_radius, confidence, fix, suggestion_body,
+                    plain_verdict, plain_title, plain_summary, plain_impact_label,
+                    plain_impact, plain_body)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (number, f.severity, f.file, f.line, f.title, f.message,
-                 f.code_snippet, f.blast_radius, f.confidence, f.fix, f.suggestion_body),
+                 f.code_snippet, f.blast_radius, f.confidence, f.fix, f.suggestion_body,
+                 f.plain_verdict, f.plain_title, f.plain_summary, f.plain_impact_label,
+                 f.plain_impact, f.plain_body),
             )
         c.execute(
             "UPDATE prs SET status='awaiting_user', updated_at=datetime('now') WHERE number=?",
@@ -483,6 +493,15 @@ async def post_finding(fid: int):
         )
     except Exception as e:
         raise HTTPException(500, f"gh post failed: {e}")
+    # Technical comment is up. Hang the plain-English retelling underneath it
+    # as a threaded reply, so the author reads the precise version first and
+    # the human one second. A failure here must not undo the comment we just
+    # posted, so it is logged rather than raised.
+    if f["plain_body"]:
+        try:
+            gh.reply_to_inline_comment(pr["number"], cid, f["plain_body"])
+        except Exception as e:
+            db.log_action(pr["number"], "plain_reply_failed", str(e)[:500])
     # Keep DB in sync with the SHA we just used.
     with db.conn() as c:
         c.execute("UPDATE prs SET head_sha=? WHERE number=?", (head_sha, pr["number"]))

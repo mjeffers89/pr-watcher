@@ -107,9 +107,29 @@
         </div>
 
         <div class="mt-4 space-y-2">
+          <div class="flex items-center gap-1 mb-3" x-show="head.findings.length > 0">
+            <button @click="setFindingView('plain')"
+                    :class="findingView === 'plain'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'"
+                    class="px-3 py-1.5 text-sm rounded-md border">
+              Plain English
+            </button>
+            <button @click="setFindingView('technical')"
+                    :class="findingView === 'technical'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'"
+                    class="px-3 py-1.5 text-sm rounded-md border">
+              Technical
+            </button>
+            <span class="text-xs text-slate-400 ml-2">
+              Post sends the technical comment, then the plain one as a reply.
+            </span>
+          </div>
           <template x-for="sev in ['critical', 'important', 'suggestion', 'nit']" :key="sev">
             <div x-show="findingsBySev(head, sev).length > 0">
-              <div class="text-xs font-semibold uppercase tracking-wide mb-1"
+              <div x-show="findingView === 'technical'"
+                   class="text-xs font-semibold uppercase tracking-wide mb-1"
                    :class="{
                      'text-red-700': sev === 'critical',
                      'text-amber-700': sev === 'important',
@@ -118,7 +138,51 @@
                    }"
                    x-text="sev + ' (' + findingsBySev(head, sev).length + ')'"></div>
               <template x-for="f in findingsBySev(head, sev)" :key="f.id">
-                <details class="rounded-md border mb-1" :class="'sev-' + f.severity">
+                <div>
+
+                <!-- Plain English view: the default. Same finding, no jargon. -->
+                <div x-show="findingView === 'plain'"
+                     class="rounded-xl border bg-white mb-2 px-5 py-4"
+                     :class="verdictRing(f)">
+                  <div class="flex items-start justify-between gap-3">
+                    <div class="flex items-start gap-3 min-w-0">
+                      <span class="shrink-0 mt-0.5 w-6 h-6 rounded-full border flex items-center justify-center text-xs font-bold"
+                            :class="verdictClass(f)"
+                            x-text="verdictOf(f) === 'Your call' ? '?' : '!'"></span>
+                      <h4 class="text-base font-semibold text-slate-900 leading-snug">
+                        <span x-text="plainIndex(head, f) + '. '"></span><span x-text="plainTitle(f)"></span>
+                      </h4>
+                    </div>
+                    <span class="shrink-0 text-xs px-2.5 py-1 rounded-full border font-medium"
+                          :class="verdictClass(f)" x-text="verdictOf(f)"></span>
+                  </div>
+
+                  <p class="mt-2 text-sm text-slate-700 leading-relaxed" x-text="plainSummary(f)"></p>
+
+                  <div x-show="f.plain_impact" class="mt-3 pt-3 border-t border-slate-100">
+                    <div class="text-xs text-slate-500 mb-1" x-text="plainImpactLabel(f)"></div>
+                    <p class="text-sm text-slate-700 leading-relaxed" x-text="f.plain_impact"></p>
+                  </div>
+
+                  <div class="mt-3 flex items-center gap-2">
+                    <template x-if="f.status === 'pending'">
+                      <div class="flex gap-2">
+                        <button @click="postFinding(f.id)"
+                                class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">Post</button>
+                        <button @click="skipFinding(f.id)"
+                                class="px-3 py-1.5 text-xs rounded-md bg-slate-200 hover:bg-slate-300">Skip</button>
+                      </div>
+                    </template>
+                    <span x-show="f.status !== 'pending'"
+                          class="text-xs text-slate-400" x-text="f.status"></span>
+                    <span class="text-xs text-slate-400 ml-auto"
+                          x-text="f.file ? (f.file + ':' + f.line) : ''"></span>
+                  </div>
+                </div>
+
+                <!-- Technical view: the original card, unchanged. -->
+                <details x-show="findingView === 'technical'"
+                         class="rounded-md border mb-1" :class="'sev-' + f.severity">
                   <summary class="cursor-pointer px-3 py-2 flex items-center justify-between gap-2">
                     <div class="flex-1 min-w-0">
                       <span class="font-medium" x-text="f.title"></span>
@@ -152,6 +216,8 @@
                     </div>
                   </div>
                 </details>
+
+                </div>
               </template>
             </div>
           </template>
@@ -383,6 +449,52 @@ function app() {
     repo: '',
     myPrs: [],
     myPrsError: '',
+    // 'plain' | 'technical'. Plain English is the default view; the choice
+    // sticks across reloads so the user sets it once.
+    findingView: localStorage.getItem('prw_finding_view') || 'plain',
+
+    setFindingView(v) {
+      this.findingView = v;
+      localStorage.setItem('prw_finding_view', v);
+    },
+
+    // Findings reviewed before the plain-English layer existed have no
+    // plain_* fields. Fall back to the technical text rather than a blank card.
+    // Number findings across the whole PR, not per severity group — the plain
+    // view hides the severity headings, so per-group numbering would restart
+    // with no visible reason.
+    plainIndex(head, f) {
+      const order = ['critical', 'important', 'suggestion', 'nit'];
+      const all = [...head.findings].sort(
+        (a, b) => order.indexOf(a.severity) - order.indexOf(b.severity) || a.id - b.id
+      );
+      return all.findIndex(x => x.id === f.id) + 1;
+    },
+    plainTitle(f) { return f.plain_title || f.title; },
+    plainSummary(f) { return f.plain_summary || f.message; },
+    plainImpactLabel(f) { return f.plain_impact_label || 'Why it matters'; },
+    verdictOf(f) {
+      if (f.plain_verdict) return f.plain_verdict;
+      if (f.severity === 'critical' || f.severity === 'important') return 'Real bug';
+      if (f.severity === 'nit') return 'Style point';
+      return 'Worth tidying';
+    },
+    verdictClass(f) {
+      return {
+        'Real bug':      'bg-red-100 text-red-800 border-red-200',
+        'Your call':     'bg-blue-100 text-blue-800 border-blue-200',
+        'Worth tidying': 'bg-amber-100 text-amber-800 border-amber-200',
+        'Style point':   'bg-slate-100 text-slate-700 border-slate-200',
+      }[this.verdictOf(f)] || 'bg-slate-100 text-slate-700 border-slate-200';
+    },
+    verdictRing(f) {
+      return {
+        'Real bug':      'border-red-200',
+        'Your call':     'border-blue-300',
+        'Worth tidying': 'border-amber-200',
+        'Style point':   'border-slate-200',
+      }[this.verdictOf(f)] || 'border-slate-200';
+    },
 
     get pendingAuthors() {
       const counts = {};

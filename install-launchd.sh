@@ -20,7 +20,7 @@ LOG="$HOME/.pr-watcher/launchd.log"
 
 # Homebrew bin first so gh / claude / python resolve the same as in a login
 # shell. Adjust if your tools live elsewhere.
-LAUNCHD_PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
+LAUNCHD_PATH="$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$HOME/.local/bin"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.pr-watcher"
 

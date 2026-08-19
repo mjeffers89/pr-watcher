@@ -274,6 +274,28 @@ def post_inline_comment(number, body, path, line, commit_sha):
     return data["id"]
 
 
+def reply_to_inline_comment(number, comment_id, body):
+    """Post `body` as a threaded reply under an existing inline comment.
+
+    Used for the plain-English follow-up: the technical comment lands first,
+    this one hangs underneath it in the same thread. Returns the reply id.
+    """
+    r = subprocess.run(
+        [
+            "gh", "api",
+            f"repos/{_repo()}/pulls/{number}/comments/{comment_id}/replies",
+            "-f", f"body={body}",
+        ],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        detail = (r.stderr or "").strip() or (r.stdout or "").strip()
+        raise RuntimeError(
+            f"plain-English reply failed on comment {comment_id}: {detail}"
+        )
+    return json.loads(r.stdout)["id"]
+
+
 def approve_pr(number, body=None):
     cmd = ["gh", "pr", "review", str(number), "--repo", _repo(), "--approve"]
     if body:

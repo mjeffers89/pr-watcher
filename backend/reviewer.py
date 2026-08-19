@@ -326,8 +326,10 @@ def _insert_findings(pr_number: int, findings: list[dict]) -> None:
             c.execute(
                 """INSERT INTO findings
                    (pr_number, severity, file, line, title, message,
-                    code_snippet, blast_radius, confidence, fix, suggestion_body)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    code_snippet, blast_radius, confidence, fix, suggestion_body,
+                    plain_verdict, plain_title, plain_summary, plain_impact_label,
+                    plain_impact, plain_body)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     pr_number,
                     f.get("severity", "suggestion"),
@@ -340,6 +342,12 @@ def _insert_findings(pr_number: int, findings: list[dict]) -> None:
                     f.get("confidence"),
                     f.get("fix"),
                     f.get("suggestion_body"),
+                    f.get("plain_verdict"),
+                    f.get("plain_title"),
+                    f.get("plain_summary"),
+                    f.get("plain_impact_label"),
+                    f.get("plain_impact"),
+                    f.get("plain_body"),
                 ),
             )
         if new_findings:
