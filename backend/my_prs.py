@@ -243,18 +243,30 @@ Then write, for each:
   apologising for existing. If you are pushing back, give the actual reason.
   For `code_fix`, the short holding reply that says what you are going to do.
   Empty string for `no_action`.
-- `fix_prompt` — for `code_fix` only, a self-contained instruction someone
-  could hand to Claude Code in the repo to make the change. Name the file and
-  what to change, state how to verify it, and mention the test to add or
-  update. Empty string otherwise.
+- `fix_prompt` — a self-contained instruction someone could hand to Claude
+  Code in the repo to make the change. Name the file and what to change, state
+  how to verify it, and mention the test to add or update.
+
+  Write this for `code_fix` **and** for `reply`. On a `reply` you are arguing
+  that no change is needed, but the author may read the thread and decide the
+  commenter had a point after all. Give them the route to act on it without
+  coming back to ask. Write it as the change the commenter is asking for, not
+  as a defence of the current code.
+
+  Empty string only for `no_action`, where the code is already right or a later
+  commit has handled it.
 - `confidence` — low | medium | high, on your read of what the comment needs.
+
+Both fields matter on a `reply`. The author has two ways forward — push back,
+or concede and change it — and the point of this is that they do not have to
+work the second one out for themselves.
 
 Output only a JSON array inside <ACTIONS>...</ACTIONS>, one object per comment,
 in the same order, each carrying the `thread_id` it belongs to:
 
 <ACTIONS>
 [{{"thread_id": "...", "action": "reply", "summary": "...", "recommendation": "...",
-   "reply_draft": "...", "fix_prompt": "", "confidence": "high"}}]
+   "reply_draft": "...", "fix_prompt": "...", "confidence": "high"}}]
 </ACTIONS>
 
 No prose outside the markers."""
@@ -480,3 +492,92 @@ def send_to_teams(number, summary, title, url):
         )
     db.log_action(number, "review_request_sent", config.teams_channel_label())
     return {"ok": True}
+
+_CLARIFIER_PROMPT = """You are helping the author of PR #{number} ("{title}") in
+`{repo}` decide what to do about one comment on it.
+
+**Ignore any skills or CLAUDE.md files in scope.** They are not part of this task.
+
+Read the PR before arguing anything:
+
+```bash
+gh pr diff {number} --repo {repo}
+gh pr view {number} --repo {repo} --json title,body
+```
+
+# The comment
+
+From {author}{where}:
+
+{body}
+
+# What was already suggested
+
+Read as: needs {action}.
+
+{summary}
+
+{recommendation}
+
+# Who you are talking to
+
+The author of the PR, and not an engineer. They have read the suggestion above
+and want to think about it rather than act on it straight away. Usually that
+means one of:
+
+- They agree with the commenter and want to know what changing it involves.
+- They think the commenter is wrong and want to check that instinct before
+  saying so.
+- They do not follow what the comment is actually asking for.
+
+Answer in plain English. No identifiers, file paths or line numbers in your
+prose unless they ask. Give a real opinion and change it when they make a good
+point. If the earlier suggestion was wrong, say so plainly.
+
+# What you can produce
+
+You cannot write to GitHub and you cannot edit the repo. Two markers are
+available, and they render as buttons:
+
+Wrap a message to send to the commenter in reply markers:
+
+<REPLY>
+the message, as the PR author speaking to the commenter
+</REPLY>
+
+Wrap an instruction for making the change in fix markers. Self-contained, names
+the file and the change, says how to verify it and what test to add:
+
+<FIX>
+the instruction to hand to Claude Code in the repo
+</FIX>
+
+Use whichever fits what they asked. Both, when they are still deciding and want
+to see each option. Neither, when they just asked a question. Only ever put the
+artefact itself inside the markers, and say in your normal reply what each
+button will do."""
+
+
+def clarifier_seed(number, title, thread, analysis, user_message):
+    """Opening prompt for the per-thread clarifier conversation."""
+    where = f" on {thread['path']}:{thread['line']}" if thread.get("path") else ""
+    return _CLARIFIER_PROMPT.format(
+        number=number, title=title, repo=config.repo(),
+        author=thread["author"], where=where, body=thread["body"],
+        action=(analysis or {}).get("action", "a decision"),
+        summary=(analysis or {}).get("summary", "(no summary was produced)"),
+        recommendation=(analysis or {}).get("recommendation", ""),
+    ) + f"\n\n---\n\nTheir first message:\n\n{user_message}"
+
+
+def find_thread(number, thread_id):
+    """Locate one outstanding thread plus its stored triage, or (None, None)."""
+    prs = {p["number"]: p for p in gather(config.self_login())}
+    pr = prs.get(number)
+    if pr is None:
+        return None, None
+    for t in pr["threads"]:
+        if str(t["root_id"]) == str(thread_id):
+            return pr, t
+    return pr, None
+

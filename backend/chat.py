@@ -114,32 +114,8 @@ Their first message:
 {user_message}"""
 
 
-async def send(pr_number, user_message):
-    """Run one chat turn. Returns {"ok": bool, "reply"|"error": str}."""
-    with db.conn() as c:
-        pr = c.execute(
-            "SELECT number, title, chat_session_id FROM prs WHERE number=?",
-            (pr_number,),
-        ).fetchone()
-    if pr is None:
-        return {"ok": False, "error": "PR not found"}
-
-    session_id = pr["chat_session_id"]
-    first_turn = not session_id
-    if first_turn:
-        session_id = str(uuid.uuid4())
-        prompt = _seed_prompt(pr_number, pr["title"], user_message)
-        session_args = ["--session-id", session_id]
-    else:
-        prompt = user_message
-        session_args = ["--resume", session_id]
-
-    with db.conn() as c:
-        c.execute(
-            "INSERT INTO chat_messages (pr_number, role, content) VALUES (?, 'user', ?)",
-            (pr_number, user_message),
-        )
-
+async def _run(scope, prompt, session_args):
+    """One `claude -p` turn. Returns the reply text or raises RuntimeError."""
     async with _CHAT_SEM:
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", prompt,
@@ -157,11 +133,11 @@ async def send(pr_number, user_message):
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return {"ok": False, "error": f"Claude timed out after {CHAT_TIMEOUT}s"}
+            raise RuntimeError(f"Claude timed out after {CHAT_TIMEOUT}s")
 
     if proc.returncode != 0:
         err = (stderr.decode(errors="replace") or "").strip()
-        return {"ok": False, "error": err or f"claude exited {proc.returncode}"}
+        raise RuntimeError(err or f"claude exited {proc.returncode}")
 
     try:
         payload = json.loads(stdout.decode(errors="replace"))
@@ -169,35 +145,91 @@ async def send(pr_number, user_message):
     except (ValueError, TypeError):
         # Fall back to raw stdout rather than losing a turn the user paid for.
         reply = stdout.decode(errors="replace").strip()
-
     if not reply:
-        return {"ok": False, "error": "Claude returned an empty reply"}
+        raise RuntimeError("Claude returned an empty reply")
+    return reply
+
+
+async def send_scoped(scope, user_message, seed):
+    """Run one turn in `scope`, seeding the conversation on its first message.
+
+    `seed` is called only on the first turn and returns the full opening prompt
+    (context plus the user's message). Later turns send the bare message and
+    let --resume carry the history.
+    """
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT session_id FROM chat_sessions WHERE scope=?", (scope,)
+        ).fetchone()
+    session_id = row["session_id"] if row else None
+    first_turn = session_id is None
+    if first_turn:
+        session_id = str(uuid.uuid4())
+        prompt = seed(user_message)
+        session_args = ["--session-id", session_id]
+    else:
+        prompt = user_message
+        session_args = ["--resume", session_id]
+
+    with db.conn() as c:
+        c.execute(
+            "INSERT INTO scoped_chat_messages (scope, role, content) VALUES (?, 'user', ?)",
+            (scope, user_message),
+        )
+    try:
+        reply = await _run(scope, prompt, session_args)
+    except RuntimeError as e:
+        return {"ok": False, "error": str(e)}
 
     # Only claim the session once a turn has actually succeeded, so a failed
-    # first turn does not strand the PR on a session that never existed.
+    # first turn does not strand the scope on a session that never existed.
     with db.conn() as c:
         if first_turn:
             c.execute(
-                "UPDATE prs SET chat_session_id=? WHERE number=?",
-                (session_id, pr_number),
+                "INSERT OR REPLACE INTO chat_sessions (scope, session_id) VALUES (?, ?)",
+                (scope, session_id),
             )
         c.execute(
-            "INSERT INTO chat_messages (pr_number, role, content) VALUES (?, 'assistant', ?)",
-            (pr_number, reply),
+            "INSERT INTO scoped_chat_messages (scope, role, content) VALUES (?, 'assistant', ?)",
+            (scope, reply),
         )
     return {"ok": True, "reply": reply}
 
 
-def history(pr_number):
+def scoped_history(scope):
     with db.conn() as c:
         return db.rows_to_dicts(c.execute(
-            "SELECT id, role, content, created_at FROM chat_messages "
-            "WHERE pr_number=? ORDER BY id ASC",
-            (pr_number,),
+            "SELECT id, role, content, created_at FROM scoped_chat_messages "
+            "WHERE scope=? ORDER BY id ASC",
+            (scope,),
         ).fetchall())
 
 
-def reset(pr_number):
+def scoped_reset(scope):
     with db.conn() as c:
-        c.execute("DELETE FROM chat_messages WHERE pr_number=?", (pr_number,))
-        c.execute("UPDATE prs SET chat_session_id=NULL WHERE number=?", (pr_number,))
+        c.execute("DELETE FROM scoped_chat_messages WHERE scope=?", (scope,))
+        c.execute("DELETE FROM chat_sessions WHERE scope=?", (scope,))
+
+
+# ---- Review-queue PR chat -------------------------------------------------
+async def send(pr_number, user_message):
+    """The review-queue chat: one conversation per PR being reviewed."""
+    with db.conn() as c:
+        pr = c.execute(
+            "SELECT number, title FROM prs WHERE number=?", (pr_number,)
+        ).fetchone()
+    if pr is None:
+        return {"ok": False, "error": "PR not found"}
+    return await send_scoped(
+        f"pr:{pr_number}",
+        user_message,
+        lambda msg: _seed_prompt(pr_number, pr["title"], msg),
+    )
+
+
+def history(pr_number):
+    return scoped_history(f"pr:{pr_number}")
+
+
+def reset(pr_number):
+    scoped_reset(f"pr:{pr_number}")

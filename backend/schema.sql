@@ -60,6 +60,27 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Conversations are addressed by an opaque scope string rather than a PR id,
+-- because they hang off two different things: a PR in the review queue
+-- ("pr:26145") and one comment thread on the user's own PR
+-- ("thread:26156:123456"). The user's own PRs never appear in `prs`, so the
+-- messages table above cannot hold them — its foreign key would reject them.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  scope TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS scoped_chat_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL,
+  role TEXT NOT NULL, -- user | assistant
+  content TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_scoped_chat ON scoped_chat_messages(scope, id);
+
 -- Triage of feedback on the user's OWN PRs. One row per outstanding comment
 -- thread. Keyed on the GitHub thread/comment id so a re-run updates in place
 -- rather than stacking duplicates. Not tied to the `prs` table: those are other

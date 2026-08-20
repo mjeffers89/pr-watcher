@@ -212,6 +212,10 @@ async def triage_my_pr(number: int):
     return result
 
 
+class ChatIn(BaseModel):
+    message: str
+
+
 class ReviewRequestIn(BaseModel):
     summary: str
 
@@ -270,6 +274,48 @@ async def reply_to_thread(number: int, thread_id: str, payload: ThreadReplyIn):
             (number, thread_id),
         )
     db.log_action(number, "my_pr_replied", f"thread {thread_id}")
+    return {"ok": True}
+
+
+@app.get("/api/my_prs/{number}/threads/{thread_id}/chat")
+async def get_thread_chat(number: int, thread_id: str):
+    return {"messages": chat.scoped_history(f"thread:{number}:{thread_id}")}
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/chat")
+async def send_thread_chat(number: int, thread_id: str, payload: ChatIn):
+    """Talk through one comment: agree with it, argue with it, or understand it.
+
+    Scoped to the thread rather than the PR so the conversation stays about the
+    one decision, and so several threads on the same PR do not bleed together.
+    """
+    msg = (payload.message or "").strip()
+    if not msg:
+        raise HTTPException(400, "message is empty")
+    pr, thread = my_prs.find_thread(number, thread_id)
+    if pr is None:
+        raise HTTPException(404, "not one of your open PRs")
+    if thread is None:
+        raise HTTPException(404, "that thread is no longer outstanding")
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT * FROM my_pr_actions WHERE pr_number=? AND thread_id=?",
+            (number, str(thread_id)),
+        ).fetchone()
+    analysis = dict(row) if row else None
+    result = await chat.send_scoped(
+        f"thread:{number}:{thread_id}",
+        msg,
+        lambda m: my_prs.clarifier_seed(number, pr["title"], thread, analysis, m),
+    )
+    if not result["ok"]:
+        raise HTTPException(500, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/chat/reset")
+async def reset_thread_chat(number: int, thread_id: str):
+    chat.scoped_reset(f"thread:{number}:{thread_id}")
     return {"ok": True}
 
 
@@ -576,10 +622,6 @@ def _do_approve(number: int, reason: str):
 
 
 # ---------- Routes: chat ---------------------------------------------------
-class ChatIn(BaseModel):
-    message: str
-
-
 class ChatPostIn(BaseModel):
     body: str
 

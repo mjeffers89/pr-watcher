@@ -605,10 +605,15 @@
                         </div>
 
                         <!-- Needs a code change: hand it to Claude -->
-                        <div x-show="t.analysis.action === 'code_fix' && t.analysis.fix_prompt"
+                        <div x-show="t.analysis.fix_prompt"
                              class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
                           <div class="text-xs font-medium text-amber-900 mb-1">
-                            This needs a code change. Hand this to Claude in the learnamp repo:
+                            <span x-show="t.analysis.action === 'code_fix'">
+                              This needs a code change. Hand this to Claude in the learnamp repo:
+                            </span>
+                            <span x-show="t.analysis.action !== 'code_fix'">
+                              Or, if you agree with them, hand this to Claude instead of replying:
+                            </span>
                           </div>
                           <pre @click="selectAll($el)" title="Click to select all"
                                class="text-xs text-slate-800 whitespace-pre-wrap max-h-40 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
@@ -643,10 +648,94 @@
                                   class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
                             <span x-text="replying === t.root_id ? 'Sending…' : 'Send this reply'"></span>
                           </button>
+                          <button @click="toggleThreadChat(pr.number, t)"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                            <span x-text="threadChatFor === t.root_id ? 'Close' : 'Talk it through'"></span>
+                          </button>
                           <button @click="skipThread(pr.number, t)"
                                   class="px-3 py-1.5 text-xs rounded-md bg-slate-200 hover:bg-slate-300">
                             <span x-text="t.analysis.action === 'no_action' ? 'Nothing to do' : 'Skip'"></span>
                           </button>
+                        </div>
+
+                        <!-- Clarifier: scoped to this one comment, so several
+                             threads on a PR never bleed into each other. -->
+                        <div x-show="threadChatFor === t.root_id"
+                             class="mt-3 rounded-lg border border-slate-300 bg-white p-3">
+                          <div class="flex items-center justify-between mb-2">
+                            <div class="text-xs font-medium text-slate-700">Talking through this comment</div>
+                            <button @click="resetThreadChat()"
+                                    class="text-xs text-slate-500 hover:text-slate-800 underline">Start over</button>
+                          </div>
+
+                          <div x-show="threadChatMessages.length === 0" class="text-xs text-slate-500 mb-2">
+                            Agree with them and want to know what changing it involves? Think they
+                            are wrong and want to sense-check that first? Ask.
+                          </div>
+
+                          <div class="space-y-2 mb-2">
+                            <template x-for="(m, mi) in threadChatMessages" :key="mi">
+                              <div>
+                                <div x-show="m.role === 'user'" class="flex justify-end">
+                                  <div class="max-w-[85%] rounded-lg bg-slate-900 text-white px-3 py-2 text-sm whitespace-pre-wrap"
+                                       x-text="m.content"></div>
+                                </div>
+                                <div x-show="m.role === 'assistant'" class="space-y-2">
+                                  <template x-for="(part, pi) in clarifierParts(m.content)" :key="pi">
+                                    <div>
+                                      <div x-show="part.type === 'text'"
+                                           class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm text-slate-800 leading-relaxed"
+                                           x-html="renderMd(part.body)"></div>
+
+                                      <div x-show="part.type === 'reply'"
+                                           class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                                        <div class="text-xs text-blue-800 font-medium mb-1">Reply to send</div>
+                                        <div class="text-sm text-slate-800 whitespace-pre-wrap" x-text="part.body"></div>
+                                        <button @click="sendThreadReplyBody(pr.number, t, part.body, mi + '-' + pi)"
+                                                :disabled="replying !== null"
+                                                class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                                          <span x-text="replying === (mi + '-' + pi) ? 'Sending…' : 'Send this to the commenter'"></span>
+                                        </button>
+                                      </div>
+
+                                      <div x-show="part.type === 'fix'"
+                                           class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                                        <div class="text-xs text-amber-900 font-medium mb-1">
+                                          Instruction for Claude in your checkout
+                                        </div>
+                                        <pre @click="selectAll($el)" title="Click to select all"
+                                             class="text-xs text-slate-800 whitespace-pre-wrap max-h-40 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
+                                             x-text="part.body"></pre>
+                                        <button @click="copyText(part.body, 'cfix-' + mi + '-' + pi)"
+                                                class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                                          <span x-text="copied === ('cfix-' + mi + '-' + pi) ? 'Copied' : 'Copy the instruction'"></span>
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </template>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+
+                          <div x-show="threadChatBusy" class="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                            <svg class="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" opacity=".25"/>
+                              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2"/>
+                            </svg>
+                            Claude is reading the PR…
+                          </div>
+
+                          <div class="flex gap-2">
+                            <input x-model="threadChatInput" @keydown.enter="sendThreadChat()"
+                                   :disabled="threadChatBusy"
+                                   placeholder="I think they are right — what would changing it involve?"
+                                   class="flex-1 px-3 py-2 text-sm rounded-md border border-slate-300 disabled:bg-slate-100" />
+                            <button @click="sendThreadChat()" :disabled="threadChatBusy"
+                                    class="px-4 py-2 text-sm rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                              Send
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </template>
@@ -877,6 +966,99 @@ function app() {
         this.myTriageError = String(e);
       } finally {
         this.sending = null;
+      }
+    },
+
+    // ---- Per-comment clarifier ----------------------------------------
+    threadChatFor: null,
+    threadChatPr: null,
+    threadChatMessages: [],
+    threadChatInput: '',
+    threadChatBusy: false,
+
+    async toggleThreadChat(number, t) {
+      if (this.threadChatFor === t.root_id) { this.threadChatFor = null; return; }
+      this.threadChatFor = t.root_id;
+      this.threadChatPr = number;
+      this.threadChatMessages = [];
+      this.myTriageError = '';
+      const r = await fetch(`/api/my_prs/${number}/threads/${t.root_id}/chat`);
+      if (r.ok) this.threadChatMessages = (await r.json()).messages;
+    },
+
+    async sendThreadChat() {
+      const msg = this.threadChatInput.trim();
+      if (!msg || this.threadChatBusy) return;
+      const number = this.threadChatPr, tid = this.threadChatFor;
+      this.threadChatInput = '';
+      this.threadChatMessages.push({ role: 'user', content: msg });
+      this.threadChatBusy = true;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/threads/${tid}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Request failed (${r.status})`;
+        } else {
+          this.threadChatMessages.push({ role: 'assistant', content: (await r.json()).reply });
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.threadChatBusy = false;
+      }
+    },
+
+    async resetThreadChat() {
+      await fetch(`/api/my_prs/${this.threadChatPr}/threads/${this.threadChatFor}/chat/reset`,
+                  { method: 'POST' });
+      this.threadChatMessages = [];
+    },
+
+    // The clarifier wraps a sendable reply in <REPLY> and a change instruction
+    // in <FIX>. Split a turn into prose plus those, so each gets its own control.
+    clarifierParts(content) {
+      const parts = [];
+      const re = /<(REPLY|FIX)>([\s\S]*?)<\/\1>/g;
+      let last = 0, m;
+      while ((m = re.exec(content)) !== null) {
+        if (m.index > last) {
+          parts.push({ type: 'text', body: content.slice(last, m.index).trim() });
+        }
+        parts.push({ type: m[1].toLowerCase(), body: m[2].trim() });
+        last = re.lastIndex;
+      }
+      if (last < content.length) {
+        parts.push({ type: 'text', body: content.slice(last).trim() });
+      }
+      return parts.filter(p => p.body);
+    },
+
+    // Send an arbitrary body to the thread — used by the clarifier's drafts,
+    // which are not the stored reply_draft.
+    async sendThreadReplyBody(number, t, body, key) {
+      this.replying = key;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/threads/${t.root_id}/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body, kind: t.kind }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Reply failed (${r.status})`;
+        } else if (t.analysis) {
+          t.analysis.status = 'replied';
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.replying = null;
       }
     },
 
