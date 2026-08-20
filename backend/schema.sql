@@ -127,6 +127,20 @@ CREATE TABLE IF NOT EXISTS thread_refinements (
   PRIMARY KEY (pr_number, thread_id)
 );
 
+-- Every decision made on one PR, merged into a single instruction and a single
+-- reply. Regenerated on demand rather than kept in step with the refinements,
+-- so `covered_threads` records which ones it was built from.
+CREATE TABLE IF NOT EXISTS pr_bundles (
+  pr_number INTEGER PRIMARY KEY,
+  instruction TEXT,
+  reply TEXT,
+  covered_threads TEXT,   -- comma-separated thread ids folded in
+  handoff_path TEXT,
+  status TEXT NOT NULL DEFAULT 'draft', -- draft | posted
+  posted_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,

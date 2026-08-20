@@ -277,6 +277,63 @@ async def reply_to_thread(number: int, thread_id: str, payload: ThreadReplyIn):
     return {"ok": True}
 
 
+class BundleReplyIn(BaseModel):
+    reply: str
+
+
+@app.get("/api/my_prs/{number}/summary")
+def my_pr_summary(number: int):
+    """The decisions made on this PR, collected. No model call, so it is instant."""
+    text = my_prs.assemble_summary(number)
+    if text is None:
+        raise HTTPException(400, "nothing decided on this PR yet")
+    return {"text": text}
+
+
+@app.post("/api/my_prs/{number}/bundle")
+async def build_bundle(number: int):
+    """Merge every decision on this PR into one instruction and one reply."""
+    result = await my_prs.bundle(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/bundle/handoff")
+async def bundle_handoff(number: int):
+    result = my_prs.write_bundle_handoff(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/bundle/post")
+async def post_bundle(number: int, payload: BundleReplyIn):
+    """Post the merged reply as a single comment on the PR conversation.
+
+    One comment rather than a reply per thread: that is the point of bundling.
+    The individual threads stay open, since a reader following one of them
+    should still see it acknowledged — mark them as handled with Skip once this
+    is up.
+    """
+    body = (payload.reply or "").strip()
+    if not body:
+        raise HTTPException(400, "nothing to post")
+    try:
+        cid = gh.post_issue_comment(number, body)
+    except Exception as e:
+        raise HTTPException(500, f"gh post failed: {e}")
+    with db.conn() as c:
+        c.execute(
+            "UPDATE pr_bundles SET status='posted', posted_at=datetime('now') "
+            "WHERE pr_number=?",
+            (number,),
+        )
+    db.log_action(number, "bundle_posted", f"comment {cid}")
+    watchers.notify(f"Posted a combined reply on #{number}")
+    return {"ok": True, "comment_id": cid}
+
+
 class RefineIn(BaseModel):
     note: str
 

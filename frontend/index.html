@@ -570,6 +570,107 @@
                 </div>
               </template>
 
+              <!-- Everything decided on this PR, collected -->
+              <div x-show="pr.decided_count > 0" class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                  <div class="text-xs font-medium text-emerald-900">
+                    <span x-text="pr.decided_count"></span>
+                    <span x-text="pr.decided_count === 1 ? 'comment decided' : 'comments decided'"></span>
+                    <span x-show="pr.threads.length - pr.decided_count > 0" class="text-emerald-700">
+                      · <span x-text="pr.threads.length - pr.decided_count"></span> to go
+                    </span>
+                  </div>
+                  <div class="flex gap-2">
+                    <button @click="copyText(summaryText(pr), 'sum-' + pr.number)"
+                            class="px-3 py-1.5 text-xs rounded-md bg-emerald-700 text-white hover:bg-emerald-800">
+                      <span x-text="copied === ('sum-' + pr.number) ? 'Copied' : 'Copy the whole lot'"></span>
+                    </button>
+                    <button @click="showSummary = showSummary === pr.number ? null : pr.number"
+                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                      <span x-text="showSummary === pr.number ? 'Hide it' : 'See it first'"></span>
+                    </button>
+                    <button @click="saveBundleHandoff(pr.number)"
+                            :disabled="handingOff === 'bundle-' + pr.number"
+                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60">
+                      <span x-text="handingOff === ('bundle-' + pr.number) ? 'Saving…' : 'Save as a file'"></span>
+                    </button>
+                  </div>
+                </div>
+
+                <div x-show="showSummary === pr.number" class="mt-2">
+                  <pre @click="selectAll($el)" title="Click to select all"
+                       class="text-xs text-slate-800 whitespace-pre-wrap max-h-72 overflow-y-auto bg-white rounded p-3 border border-emerald-100 cursor-text"
+                       x-text="summaryText(pr)"></pre>
+                </div>
+
+                <div x-show="pr.bundle && pr.bundle.handoff_path" class="mt-2">
+                  <div class="text-xs text-emerald-900 mb-1">
+                    Saved. Paste this into Claude Code in your learnamp checkout:
+                  </div>
+                  <pre @click="selectAll($el)" title="Click to select all"
+                       class="text-xs text-slate-800 whitespace-pre-wrap bg-white rounded p-2 border border-emerald-100 cursor-text"
+                       x-text="'Read ' + (pr.bundle && pr.bundle.handoff_path) + ' and work through it.'"></pre>
+                  <button @click="copyText('Read ' + pr.bundle.handoff_path + ' and work through it.', 'bhand-' + pr.number)"
+                          class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                    <span x-text="copied === ('bhand-' + pr.number) ? 'Copied' : 'Copy that line'"></span>
+                  </button>
+                </div>
+
+                <!-- Optional extra pass. The summary above is faithful to what
+                     you wrote; this rewrites it into a single ordered job. -->
+                <div class="mt-3 pt-3 border-t border-emerald-200">
+                  <button @click="buildBundle(pr.number)" :disabled="bundling === pr.number"
+                          class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60">
+                    <span x-text="bundling === pr.number
+                      ? 'Merging…'
+                      : 'Optional: tidy it into one ordered job'"></span>
+                  </button>
+                  <span class="text-xs text-emerald-800 ml-2">
+                    Takes a minute. Sequences the work and writes one reply for the PR.
+                  </span>
+
+                  <template x-if="pr.bundle && pr.bundle.instruction">
+                    <div class="mt-3 space-y-3">
+                      <div x-show="bundleNotes" class="rounded-md border border-slate-200 bg-white p-2">
+                        <div class="text-xs text-slate-500 mb-1">Worth knowing about the merge</div>
+                        <div class="text-sm text-slate-700" x-html="renderMd(bundleNotes)"></div>
+                      </div>
+
+                      <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                        <div class="text-xs font-medium text-amber-900 mb-1">Merged into one job</div>
+                        <pre @click="selectAll($el)" title="Click to select all"
+                             class="text-xs text-slate-800 whitespace-pre-wrap max-h-56 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
+                             x-text="pr.bundle.instruction"></pre>
+                        <button @click="copyText(pr.bundle.instruction, 'bun-' + pr.number)"
+                                class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                          <span x-text="copied === ('bun-' + pr.number) ? 'Copied' : 'Copy the merged version'"></span>
+                        </button>
+                      </div>
+
+                      <div x-show="pr.bundle.reply" class="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                        <div class="text-xs font-medium text-blue-900 mb-1">
+                          One comment covering all of it
+                          <span x-show="pr.bundle.status === 'posted'" class="text-blue-700">· already posted</span>
+                        </div>
+                        <textarea x-model="pr.bundle.reply" rows="8"
+                                  class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
+                        <div class="flex flex-wrap gap-2 mt-2">
+                          <button @click="postBundle(pr.number, pr.bundle)"
+                                  :disabled="postingBundle === pr.number"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                            <span x-text="postingBundle === pr.number ? 'Posting…' : 'Post it on the PR'"></span>
+                          </button>
+                          <button @click="copyText(pr.bundle.reply, 'brep-' + pr.number)"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                            <span x-text="copied === ('brep-' + pr.number) ? 'Copied' : 'Copy it instead'"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
               <!-- Outstanding feedback, one card per thread -->
               <div x-show="pr.threads.length > 0" class="mt-3 space-y-2">
                 <div class="text-xs text-slate-500">
@@ -1047,6 +1148,115 @@ function app() {
         this.myTriageError = String(e);
       } finally {
         this.sending = null;
+      }
+    },
+
+    // ---- Bundling a PR's decisions ------------------------------------
+    bundling: null,
+    bundleNotes: '',
+    postingBundle: null,
+    showSummary: null,
+
+    // Built in the browser from data already loaded, so Copy is instant and
+    // what you copy is exactly what you wrote. Mirrors assemble_summary() in
+    // my_prs.py, which writes the same text to the handoff file.
+    summaryText(pr) {
+      const decided = pr.threads.filter(
+        t => t.refinement && t.refinement.instruction
+      );
+      const undecided = pr.threads.filter(
+        t => !(t.refinement && t.refinement.instruction)
+      );
+      const where = t => t.path ? `${t.path}:${t.line}` : 'PR conversation';
+      const out = [
+        `# PR #${pr.number} — ${pr.title}`, '',
+        `Repo: ${this.repo}`,
+        `PR: ${pr.url}`, '',
+        `${decided.length} of ${pr.threads.length} comments decided.`, '',
+      ];
+      decided.forEach((t, i) => {
+        out.push('---', '', `## ${i + 1}. ${t.author} on ${where(t)}`, '',
+                 '**What they said**', '', (t.body || '').trim(), '',
+                 '**What I decided**', '', (t.refinement.note || '').trim(), '',
+                 '**Instruction**', '', (t.refinement.instruction || '').trim(), '');
+        if (t.refinement.reply_draft) {
+          out.push('**Reply drafted for them**', '',
+                   t.refinement.reply_draft.trim(), '');
+        }
+      });
+      if (undecided.length) {
+        out.push('---', '', '## Not decided yet', '');
+        undecided.forEach(t => out.push(`- ${t.author} on ${where(t)}`));
+        out.push('');
+      }
+      return out.join('\n');
+    },
+
+    async buildBundle(number) {
+      this.bundling = number;
+      this.bundleNotes = '';
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/bundle`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not bundle it (${r.status})`;
+        } else {
+          const data = await r.json();
+          this.bundleNotes = data.notes || '';
+          const pr = this.myTriage.find(p => p.number === number);
+          if (pr) {
+            pr.bundle = {
+              instruction: data.instruction, reply: data.reply,
+              handoff_path: null, status: 'draft',
+            };
+          }
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.bundling = null;
+      }
+    },
+
+    async saveBundleHandoff(number) {
+      this.handingOff = 'bundle-' + number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/bundle/handoff`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not save it (${r.status})`;
+        } else {
+          const pr = this.myTriage.find(p => p.number === number);
+          if (pr && pr.bundle) pr.bundle.handoff_path = (await r.json()).path;
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.handingOff = null;
+      }
+    },
+
+    async postBundle(number, bundle) {
+      this.postingBundle = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/bundle/post`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reply: bundle.reply }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Post failed (${r.status})`;
+        } else {
+          bundle.status = 'posted';
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.postingBundle = null;
       }
     },
 

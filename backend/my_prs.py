@@ -180,6 +180,10 @@ def gather(self_login):
             (r["pr_number"], r["thread_id"]): dict(r)
             for r in c.execute("SELECT * FROM thread_refinements").fetchall()
         }
+        bundles = {
+            r["pr_number"]: dict(r)
+            for r in c.execute("SELECT * FROM pr_bundles").fetchall()
+        }
 
     out = []
     for p in prs:
@@ -202,6 +206,11 @@ def gather(self_login):
             "threads": threads,
             "category": _categorise(p, checks, threads),
             "review_request": requests.get(p["number"]),
+            "bundle": bundles.get(p["number"]),
+            "decided_count": sum(
+                1 for t in threads
+                if t.get("refinement") and t["refinement"].get("instruction")
+            ),
         })
     return out
 
@@ -754,4 +763,230 @@ def write_handoff(number, thread_id):
             (str(path), number, str(thread_id)),
         )
     return {"ok": True, "path": str(path)}
+
+_BUNDLE_PROMPT = """The author of PR #{number} ("{title}") in `{repo}` has gone
+through the outstanding comments and decided what to do about each. Merge those
+decisions into one instruction and one reply.
+
+**Ignore any skills or CLAUDE.md files in scope.** They are not part of this task.
+
+Read the PR so the merged instruction is grounded in the real code:
+
+```bash
+gh pr diff {number} --repo {repo}
+gh pr view {number} --repo {repo} --json title,body
+```
+
+# The decisions, one per comment
+
+{blocks}
+
+# Merging the instruction
+
+One session will do all of this in one pass, so it needs to read as one job
+rather than {count} stapled together.
+
+- Put the work in the order it has to happen. If one change moves a file another
+  change edits, the move comes first and the second refers to the new location.
+- Fold genuine overlap together. Two comments asking for coverage of the same
+  method is one instruction, not two.
+- Never drop a decision to make the merge tidy. Every accepted item survives.
+- Keep every out-of-scope line from the individual decisions. That is the part
+  most likely to be lost in a merge and the part that matters most: those are
+  the things the author explicitly refused.
+- Verification steps get merged too — one command list at the end, not one per
+  section.
+- If two decisions genuinely conflict, do not pick a winner. Implement neither,
+  and say so in `notes`.
+
+# Merging the reply
+
+One comment on the PR conversation, addressed to everyone who commented.
+
+- Group by decision, not by commenter. What is being done, then what is not.
+- Attribute where it matters — if a specific reviewer raised something you are
+  declining, they should be able to see your reason without hunting.
+- Do not thank everyone individually and do not open with a summary of the PR.
+- Keep the refusals as clear as they were individually. A merged reply that
+  softens four "no"s into one vague paragraph is worse than four separate ones.
+- Sentence case, British English, no em-dashes.
+
+# Output
+
+<INSTRUCTION>
+the merged instruction
+</INSTRUCTION>
+
+<REPLY>
+the single comment to post
+</REPLY>
+
+Anything the author should know — conflicts, something you could not reconcile,
+a decision that turns out to be a bad idea next to another one. Omit the block
+if there is nothing:
+
+<NOTES>
+...
+</NOTES>"""
+
+
+async def bundle(number):
+    """Merge every decision made on one PR into one instruction and one reply."""
+    prs = {p["number"]: p for p in gather(config.self_login())}
+    pr = prs.get(number)
+    if pr is None:
+        return {"ok": False, "error": "not one of your open PRs"}
+
+    decided, undecided = [], 0
+    for t in pr["threads"]:
+        ref = t.get("refinement")
+        if ref and ref.get("instruction"):
+            decided.append((t, ref))
+        else:
+            undecided += 1
+    if not decided:
+        return {"ok": False, "error": "nothing decided yet — refine a comment first"}
+
+    blocks = []
+    for i, (t, ref) in enumerate(decided, 1):
+        where = f"{t['path']}:{t['line']}" if t.get("path") else "PR conversation"
+        blocks.append(
+            f"## Decision {i} — {t['author']} on {where}\n\n"
+            f"### What they said\n\n{t['body']}\n\n"
+            f"### What the author decided\n\n{ref['note']}\n\n"
+            f"### The instruction written for it\n\n{ref['instruction']}\n\n"
+            f"### The reply written for it\n\n{ref.get('reply_draft') or '(none)'}"
+        )
+
+    prompt = _BUNDLE_PROMPT.format(
+        number=number, title=pr["title"], repo=config.repo(),
+        blocks="\n\n---\n\n".join(blocks), count=len(decided),
+    )
+
+    async with _ANALYSIS_SEM:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--allowedTools", "Bash(gh pr diff:*)", "Bash(gh pr view:*)",
+            "Read", "Grep", "Glob",
+            cwd=str(PROJECT_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"ok": False, "error": "timed out merging the decisions"}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+
+    out = stdout.decode(errors="replace")
+    instruction = _block(out, "INSTRUCTION")
+    if not instruction:
+        return {"ok": False, "error": "no <INSTRUCTION> block in output"}
+    reply = _block(out, "REPLY")
+    notes = _block(out, "NOTES")
+    covered = ",".join(str(t["root_id"]) for t, _ in decided)
+
+    with db.conn() as c:
+        c.execute(
+            """INSERT INTO pr_bundles
+                 (pr_number, instruction, reply, covered_threads, status)
+               VALUES (?, ?, ?, ?, 'draft')
+               ON CONFLICT(pr_number) DO UPDATE SET
+                 instruction=excluded.instruction, reply=excluded.reply,
+                 covered_threads=excluded.covered_threads, handoff_path=NULL,
+                 status='draft', posted_at=NULL, created_at=datetime('now')""",
+            (number, instruction, reply, covered),
+        )
+    db.log_action(number, "bundle_built", f"{len(decided)} decisions")
+    return {
+        "ok": True, "instruction": instruction, "reply": reply,
+        "notes": notes, "covered": len(decided), "undecided": undecided,
+    }
+
+
+def write_bundle_handoff(number):
+    """Write the merged instruction out for one Claude Code session to work from."""
+    text = assemble_summary(number)
+    if text is None:
+        return {"ok": False, "error": "nothing decided on this PR yet"}
+
+    HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+    path = HANDOFF_DIR / f"pr-{number}-all-feedback.md"
+    path.write_text(text + "\n")
+    with db.conn() as c:
+        c.execute(
+            "UPDATE pr_bundles SET handoff_path=? WHERE pr_number=?",
+            (str(path), number),
+        )
+    return {"ok": True, "path": str(path)}
+
+def assemble_summary(number):
+    """Collect the decisions already written on a PR into one document.
+
+    Deliberately not an LLM call. The refinements are the work; stitching them
+    together is string concatenation, and running them back through a model
+    would add a wait and risk quietly restating what the author decided.
+    """
+    prs = {p["number"]: p for p in gather(config.self_login())}
+    pr = prs.get(number)
+    if pr is None:
+        return None
+    decided = [
+        (t, t["refinement"]) for t in pr["threads"]
+        if t.get("refinement") and t["refinement"].get("instruction")
+    ]
+    if not decided:
+        return None
+
+    lines = [
+        f"# PR #{number} — {pr['title']}",
+        "",
+        f"Repo: {config.repo()}",
+        f"PR: {pr['url']}",
+        "",
+        f"{len(decided)} of {len(pr['threads'])} comments decided.",
+        "",
+    ]
+    for i, (t, ref) in enumerate(decided, 1):
+        where = f"{t['path']}:{t['line']}" if t.get("path") else "PR conversation"
+        lines += [
+            "---",
+            "",
+            f"## {i}. {t['author']} on {where}",
+            "",
+            "**What they said**",
+            "",
+            t["body"].strip(),
+            "",
+            "**What I decided**",
+            "",
+            ref["note"].strip(),
+            "",
+            "**Instruction**",
+            "",
+            ref["instruction"].strip(),
+            "",
+        ]
+        if ref.get("reply_draft"):
+            lines += ["**Reply drafted for them**", "", ref["reply_draft"].strip(), ""]
+
+    undecided = [t for t in pr["threads"] if not (
+        t.get("refinement") and t["refinement"].get("instruction")
+    )]
+    if undecided:
+        lines += [
+            "---",
+            "",
+            "## Not decided yet",
+            "",
+        ]
+        for t in undecided:
+            where = f"{t['path']}:{t['line']}" if t.get("path") else "PR conversation"
+            lines.append(f"- {t['author']} on {where}")
+        lines.append("")
+    return "\n".join(lines)
 
