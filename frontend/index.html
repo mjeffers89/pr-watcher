@@ -35,8 +35,27 @@
     </div>
   </header>
 
+  <!-- Top-level view switch -->
+  <nav class="flex items-center gap-1 border-b border-slate-200">
+    <button @click="tab = 'queue'"
+            :class="tab === 'queue'
+              ? 'border-slate-900 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'"
+            class="px-3 py-2 text-sm border-b-2 -mb-px">
+      Review queue
+    </button>
+    <button @click="tab = 'mine'; loadMyTriage()"
+            :class="tab === 'mine'
+              ? 'border-slate-900 text-slate-900'
+              : 'border-transparent text-slate-500 hover:text-slate-800'"
+            class="px-3 py-2 text-sm border-b-2 -mb-px">
+      My PRs
+      <span x-show="myTriage.length" class="text-slate-400" x-text="'(' + myTriage.length + ')'"></span>
+    </button>
+  </nav>
+
   <!-- Watchers status -->
-  <section class="grid grid-cols-3 gap-3 text-xs">
+  <section class="grid grid-cols-3 gap-3 text-xs" x-show="tab === 'queue'">
     <template x-for="w in watchers" :key="w.name">
       <div class="bg-white border rounded-lg p-3">
         <div class="font-semibold" x-text="w.name"></div>
@@ -53,7 +72,7 @@
   </section>
 
   <!-- Head PR -->
-  <section>
+  <section x-show="tab === 'queue'">
     <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">
       Head PRs
       <span class="text-slate-400" x-show="heads.length > 0">(<span x-text="heads.length"></span>)</span>
@@ -325,7 +344,7 @@
   </section>
 
   <!-- Pending author action -->
-  <section>
+  <section x-show="tab === 'queue'">
     <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">
       Pending author action
       <span class="text-slate-400">(<span x-text="awaiting_author.length"></span>)</span>
@@ -368,7 +387,7 @@
   </section>
 
   <!-- Pending review (queue) -->
-  <section>
+  <section x-show="tab === 'queue'">
     <div class="flex items-baseline justify-between mb-2 gap-3">
       <h2 class="text-sm font-semibold uppercase text-slate-500">
         Pending review
@@ -433,8 +452,160 @@
     </div>
   </section>
 
+  <!-- My PRs -->
+  <section x-show="tab === 'mine'" class="space-y-6">
+    <div class="flex items-center justify-between">
+      <div class="text-sm text-slate-500">
+        Your open PRs, sorted by what each one needs from you.
+      </div>
+      <button @click="loadMyTriage()" :disabled="myTriageLoading"
+              class="px-3 py-1.5 rounded-md bg-white border border-slate-300 text-xs hover:bg-slate-50 disabled:opacity-60">
+        <span x-show="!myTriageLoading">Refresh</span>
+        <span x-show="myTriageLoading">Checking…</span>
+      </button>
+    </div>
+
+    <div x-show="myTriageError" class="text-sm text-red-600" x-text="myTriageError"></div>
+    <div x-show="!myTriageLoading && !myTriageError && myTriage.length === 0"
+         class="text-slate-400 italic text-sm">No open PRs of your own.</div>
+
+    <template x-for="bucket in BUCKETS" :key="bucket.key">
+      <div x-show="inBucket(bucket.key).length > 0">
+        <h2 class="text-sm font-semibold uppercase mb-1" :class="bucket.tone" x-text="bucket.label"></h2>
+        <p class="text-xs text-slate-500 mb-2" x-text="bucket.blurb"></p>
+
+        <div class="space-y-3">
+          <template x-for="pr in inBucket(bucket.key)" :key="pr.number">
+            <div class="bg-white border rounded-xl p-4" :class="bucket.ring">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <a :href="pr.url" class="font-medium text-slate-900 hover:underline"
+                     x-text="'#' + pr.number + ' · ' + pr.title"></a>
+                  <div class="text-xs text-slate-500 mt-1">
+                    <span x-text="pr.checks === 'green' ? 'checks passing'
+                      : pr.checks === 'red' ? 'checks failing'
+                      : pr.checks === 'pending' ? 'checks running' : 'no checks'"></span>
+                    <span x-show="pr.is_draft"> · draft</span>
+                    <span x-show="pr.approvals > 0"> · <span x-text="pr.approvals"></span> approved</span>
+                    <span x-show="pr.review_decision === 'CHANGES_REQUESTED'"> · changes requested</span>
+                    <span x-show="!pr.review_decision && !pr.is_draft"> · no reviewer yet</span>
+                  </div>
+                </div>
+
+                <div class="flex shrink-0 gap-2">
+                  <button x-show="bucket.key === 'ready'" @click="mergeMyPr(pr.number)"
+                          :disabled="pr.merging"
+                          class="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60">
+                    <span x-show="!pr.merging">Merge</span>
+                    <span x-show="pr.merging">Merging…</span>
+                  </button>
+                  <button x-show="bucket.key === 'comments' && !pr.threads.some(t => t.analysis)"
+                          @click="triagePr(pr.number)" :disabled="triaging === pr.number"
+                          class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                    <span x-show="triaging !== pr.number">Work out what to do</span>
+                    <span x-show="triaging === pr.number">Reading…</span>
+                  </button>
+                  <a x-show="bucket.key === 'push'" :href="pr.url"
+                     class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                    Add a reviewer
+                  </a>
+                </div>
+              </div>
+
+              <div x-show="pr.merge_error" class="mt-2 text-xs text-red-600" x-text="pr.merge_error"></div>
+
+              <!-- Outstanding feedback, one card per thread -->
+              <div x-show="pr.threads.length > 0" class="mt-3 space-y-2">
+                <div class="text-xs text-slate-500">
+                  <span x-text="pr.threads.length"></span> waiting on you
+                </div>
+                <template x-for="t in pr.threads" :key="t.root_id">
+                  <div x-show="!t.analysis || t.analysis.status === 'pending'"
+                       class="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div class="flex items-center justify-between gap-2 mb-1">
+                      <div class="text-xs text-slate-600">
+                        <span class="font-medium" x-text="t.author"></span>
+                        <span x-show="t.path" class="text-slate-400"
+                              x-text="' · ' + t.path + ':' + t.line"></span>
+                      </div>
+                      <span x-show="t.analysis"
+                            class="text-xs px-2 py-0.5 rounded-full border font-medium"
+                            :class="actionClass(t.analysis && t.analysis.action)"
+                            x-text="actionLabel(t.analysis && t.analysis.action)"></span>
+                    </div>
+
+                    <!-- Before triage: the raw comment -->
+                    <div x-show="!t.analysis"
+                         class="text-sm text-slate-700 whitespace-pre-wrap max-h-32 overflow-hidden"
+                         x-text="t.body"></div>
+
+                    <!-- After triage: what it means and what to do -->
+                    <template x-if="t.analysis">
+                      <div>
+                        <p class="text-sm text-slate-800 leading-relaxed" x-text="t.analysis.summary"></p>
+                        <div class="mt-2 pt-2 border-t border-slate-200">
+                          <div class="text-xs text-slate-500 mb-1">What I would do</div>
+                          <p class="text-sm text-slate-700 leading-relaxed" x-text="t.analysis.recommendation"></p>
+                        </div>
+
+                        <!-- Needs a code change: hand it to Claude -->
+                        <div x-show="t.analysis.action === 'code_fix' && t.analysis.fix_prompt"
+                             class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                          <div class="text-xs font-medium text-amber-900 mb-1">
+                            This needs a code change. Hand this to Claude in the learnamp repo:
+                          </div>
+                          <pre @click="selectAll($el)" title="Click to select all"
+                               class="text-xs text-slate-800 whitespace-pre-wrap max-h-40 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
+                               x-text="t.analysis.fix_prompt"></pre>
+                          <div class="flex gap-2 mt-2">
+                            <button @click="copyText(t.analysis.fix_prompt, 'fix-' + t.root_id)"
+                                    class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                              <span x-text="copied === ('fix-' + t.root_id) ? 'Copied' : 'Copy the instruction'"></span>
+                            </button>
+                          </div>
+                          <div class="text-xs text-amber-800 mt-2">
+                            Paste it into Claude Code in
+                            <code class="bg-white px-1 rounded" x-text="repoDir || 'your learnamp checkout'"></code>,
+                            on a branch off this PR. It will make the change, add the test and tell you what it ran.
+                          </div>
+                        </div>
+
+                        <!-- Needs an answer: send it -->
+                        <div x-show="t.analysis.reply_draft" class="mt-3">
+                          <div class="text-xs text-slate-500 mb-1">
+                            <span x-show="t.analysis.action === 'reply'">Reply to send</span>
+                            <span x-show="t.analysis.action === 'code_fix'">Holding reply, so they know it is in hand</span>
+                          </div>
+                          <textarea x-model="t.analysis.reply_draft" rows="3"
+                                    class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
+                        </div>
+
+                        <div class="flex gap-2 mt-2">
+                          <button x-show="t.analysis.reply_draft"
+                                  @click="sendThreadReply(pr.number, t)"
+                                  :disabled="replying === t.root_id"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                            <span x-text="replying === t.root_id ? 'Sending…' : 'Send this reply'"></span>
+                          </button>
+                          <button @click="skipThread(pr.number, t)"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-200 hover:bg-slate-300">
+                            <span x-text="t.analysis.action === 'no_action' ? 'Nothing to do' : 'Skip'"></span>
+                          </button>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+  </section>
+
   <!-- Activity -->
-  <section>
+  <section x-show="tab === 'queue'">
     <h2 class="text-sm font-semibold uppercase text-slate-500 mb-2">Recent activity</h2>
     <ul class="bg-white rounded-lg border divide-y text-sm">
       <template x-for="a in activity" :key="a.id">
@@ -546,6 +717,146 @@ function app() {
       );
       return all.findIndex(x => x.id === f.id) + 1;
     },
+    // ---- My own PRs ---------------------------------------------------
+    tab: 'queue',
+    myTriage: [],
+    myTriageLoading: false,
+    myTriageError: '',
+    triaging: null,
+    replying: null,
+    copied: null,
+    repoDir: '',
+
+    // Order matters: this is the order the buckets are read in, most
+    // actionable first. `not_ready` is last because the ball is with the user
+    // in a way no button here can help with.
+    BUCKETS: [
+      { key: 'ready', label: 'Ready to go',
+        blurb: 'Approved, checks passing, nothing outstanding.',
+        tone: 'text-emerald-700', ring: 'border-emerald-200' },
+      { key: 'comments', label: 'Review comments',
+        blurb: 'Someone is waiting on a reply from you.',
+        tone: 'text-amber-700', ring: 'border-amber-200' },
+      { key: 'push', label: 'Push for a review',
+        blurb: 'Healthy, but nobody is looking at it yet.',
+        tone: 'text-blue-700', ring: 'border-blue-200' },
+      { key: 'not_ready', label: 'Not ready yet',
+        blurb: 'Still a draft, or the build is failing.',
+        tone: 'text-slate-500', ring: 'border-slate-200' },
+    ],
+
+    inBucket(key) { return this.myTriage.filter(p => p.category === key); },
+
+    actionLabel(a) {
+      return { code_fix: 'Needs a change', reply: 'Needs an answer',
+               no_action: 'Already handled' }[a] || 'Unclear';
+    },
+    actionClass(a) {
+      return {
+        code_fix: 'bg-amber-100 text-amber-800 border-amber-200',
+        reply: 'bg-blue-100 text-blue-800 border-blue-200',
+        no_action: 'bg-slate-100 text-slate-700 border-slate-200',
+      }[a] || 'bg-slate-100 text-slate-700 border-slate-200';
+    },
+
+    async loadMyTriage() {
+      this.myTriageLoading = true;
+      this.myTriageError = '';
+      try {
+        const r = await fetch('/api/my_prs/triage');
+        const data = await r.json();
+        this.myTriage = data.prs || [];
+        if (data.error) this.myTriageError = data.error;
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.myTriageLoading = false;
+      }
+    },
+
+    async triagePr(number) {
+      this.triaging = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/triage`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Triage failed (${r.status})`;
+        } else {
+          await this.loadMyTriage();
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.triaging = null;
+      }
+    },
+
+    async sendThreadReply(number, t) {
+      this.replying = t.root_id;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/threads/${t.root_id}/reply`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ body: t.analysis.reply_draft, kind: t.kind }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Reply failed (${r.status})`;
+        } else {
+          t.analysis.status = 'replied';
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.replying = null;
+      }
+    },
+
+    async skipThread(number, t) {
+      await fetch(`/api/my_prs/${number}/threads/${t.root_id}/skip`, { method: 'POST' });
+      if (t.analysis) t.analysis.status = 'skipped';
+      else t.analysis = { status: 'skipped' };
+    },
+
+    // Clicking the instruction selects the whole thing, so copying never
+    // depends on the clipboard API being reachable.
+    selectAll(el) {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    },
+
+    // navigator.clipboard needs a secure context AND a focused document, and
+    // quietly refuses in embedded or unfocused windows. Fall back to the old
+    // textarea + execCommand route, which has neither requirement.
+    async copyText(text, key) {
+      const ok = () => {
+        this.copied = key;
+        setTimeout(() => { if (this.copied === key) this.copied = null; }, 2000);
+      };
+      try {
+        await navigator.clipboard.writeText(text);
+        return ok();
+      } catch (e) { /* fall through */ }
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        const copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (copied) return ok();
+      } catch (e) { /* fall through */ }
+      this.myTriageError = 'Could not reach the clipboard. The instruction is selectable above, copy it by hand.';
+    },
+
     // ---- Per-PR Claude chat -------------------------------------------
     chatOpenFor: null,     // PR number whose chat panel is expanded
     chatMessages: [],
@@ -721,6 +1032,7 @@ function app() {
         const r = await fetch('/api/meta');
         const m = await r.json();
         this.repo = m.repo || '';
+        this.repoDir = m.target_repo_dir || '';
       } catch (e) { /* non-fatal — links just won't render until meta loads */ }
     },
 

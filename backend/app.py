@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import chat, config, db, gh, merger, reviewer, watchers
+from . import chat, config, db, gh, merger, my_prs, reviewer, watchers
 
 FRONTEND = Path(__file__).parent.parent / "frontend"
 
@@ -154,11 +154,17 @@ def meta():
     """Static config the frontend needs — chiefly the repo slug so it can build
     PR links without hardcoding any owner/name.
     """
-    return {"repo": config.repo(), "self_login": config.self_login()}
+    return {
+        "repo": config.repo(),
+        "self_login": config.self_login(),
+        # Where the user's checkout lives, so the My PRs tab can name the
+        # directory to run a suggested fix in rather than saying "your repo".
+        "target_repo_dir": config.target_repo_dir(),
+    }
 
 
 @app.get("/api/my_prs")
-def my_prs():
+def my_prs_sidebar():
     """The user's own open PRs + approval status, for the follow-up sidebar.
 
     Kept out of /api/state so its gh latency doesn't slow the 5s state poll —
@@ -176,6 +182,69 @@ def my_prs():
         p["merging"] = p["number"] in merger.MERGING
         p["merge_error"] = merger.MERGE_ERRORS.get(p["number"])
     return {"prs": prs}
+
+
+@app.get("/api/my_prs/triage")
+def my_prs_triage_view():
+    """Own PRs bucketed, with outstanding threads and any stored triage.
+
+    Separate from /api/my_prs: this one walks every PR's comment threads, so it
+    is slow enough that the sidebar should not wait on it.
+    """
+    try:
+        prs = my_prs.gather(config.self_login())
+    except Exception as e:  # noqa: BLE001 - never blank the tab on a gh hiccup
+        return JSONResponse({"prs": [], "error": str(e)})
+    for p in prs:
+        p["merging"] = p["number"] in merger.MERGING
+        p["merge_error"] = merger.MERGE_ERRORS.get(p["number"])
+    return {"prs": prs}
+
+
+@app.post("/api/my_prs/{number}/triage")
+async def triage_my_pr(number: int):
+    result = await my_prs.analyse(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+class ThreadReplyIn(BaseModel):
+    body: str
+    kind: str  # inline | issue
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/reply")
+async def reply_to_thread(number: int, thread_id: str, payload: ThreadReplyIn):
+    """Send a reply the user has approved to one outstanding thread."""
+    body = (payload.body or "").strip()
+    if not body:
+        raise HTTPException(400, "nothing to send")
+    try:
+        if payload.kind == "inline":
+            gh.reply_to_inline_comment(number, thread_id, body)
+        else:
+            gh.post_issue_comment(number, body)
+    except Exception as e:
+        raise HTTPException(500, f"gh post failed: {e}")
+    with db.conn() as c:
+        c.execute(
+            "UPDATE my_pr_actions SET status='replied' WHERE pr_number=? AND thread_id=?",
+            (number, thread_id),
+        )
+    db.log_action(number, "my_pr_replied", f"thread {thread_id}")
+    return {"ok": True}
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/skip")
+async def skip_thread(number: int, thread_id: str):
+    with db.conn() as c:
+        c.execute(
+            "UPDATE my_pr_actions SET status='skipped' WHERE pr_number=? AND thread_id=?",
+            (number, thread_id),
+        )
+    db.log_action(number, "my_pr_skipped", f"thread {thread_id}")
+    return {"ok": True}
 
 
 @app.post("/api/my_prs/{number}/merge")

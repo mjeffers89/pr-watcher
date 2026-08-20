@@ -60,6 +60,24 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Triage of feedback on the user's OWN PRs. One row per outstanding comment
+-- thread. Keyed on the GitHub thread/comment id so a re-run updates in place
+-- rather than stacking duplicates. Not tied to the `prs` table: those are other
+-- people's PRs in the review queue, these are the user's own.
+CREATE TABLE IF NOT EXISTS my_pr_actions (
+  pr_number INTEGER NOT NULL,
+  thread_id TEXT NOT NULL,
+  action TEXT NOT NULL,         -- code_fix | reply | no_action
+  summary TEXT,
+  recommendation TEXT,
+  reply_draft TEXT,
+  fix_prompt TEXT,
+  confidence TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | replied | skipped
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (pr_number, thread_id)
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,
