@@ -112,6 +112,21 @@ CREATE TABLE IF NOT EXISTS review_requests (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- A partial-agreement handoff. The author says in their own words which parts
+-- of a comment they are taking and which they are not; that note is refined
+-- into an instruction for whoever (or whatever) does the work, plus the reply
+-- telling the commenter what was and was not accepted.
+CREATE TABLE IF NOT EXISTS thread_refinements (
+  pr_number INTEGER NOT NULL,
+  thread_id TEXT NOT NULL,
+  note TEXT NOT NULL,         -- the author's own words, verbatim
+  instruction TEXT,           -- refined, ready to hand to Claude Code
+  reply_draft TEXT,           -- what to tell the commenter
+  handoff_path TEXT,          -- file written for a Claude Code session to read
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (pr_number, thread_id)
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,

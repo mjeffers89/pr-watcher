@@ -176,6 +176,10 @@ def gather(self_login):
             r["pr_number"]: dict(r)
             for r in c.execute("SELECT * FROM review_requests").fetchall()
         }
+        refinements = {
+            (r["pr_number"], r["thread_id"]): dict(r)
+            for r in c.execute("SELECT * FROM thread_refinements").fetchall()
+        }
 
     out = []
     for p in prs:
@@ -189,6 +193,7 @@ def gather(self_login):
         for t in threads:
             rec = saved.get((p["number"], str(t["root_id"])))
             t["analysis"] = dict(rec) if rec else None
+            t["refinement"] = refinements.get((p["number"], str(t["root_id"])))
         out.append({
             **p,
             "checks": checks,
@@ -580,4 +585,173 @@ def find_thread(number, thread_id):
         if str(t["root_id"]) == str(thread_id):
             return pr, t
     return pr, None
+
+HANDOFF_DIR = Path.home() / ".pr-watcher" / "handoffs"
+
+_REFINE_PROMPT = """The author of PR #{number} ("{title}") in `{repo}` partly
+agrees with a comment on it. Turn what they have said into an instruction
+someone can act on.
+
+**Ignore any skills or CLAUDE.md files in scope.** They are not part of this task.
+
+Read the PR so the instruction is grounded in the real code:
+
+```bash
+gh pr diff {number} --repo {repo}
+gh pr view {number} --repo {repo} --json title,body
+```
+
+# The comment
+
+From {author}{where}:
+
+{body}
+
+# What the author has decided, in their words
+
+{note}
+
+# The line they have drawn is the whole point
+
+They are taking some of that comment and not the rest. Your job is to carry
+that split through exactly as they set it, not to relitigate it.
+
+- Do not widen the scope. If they are taking one of three suggestions, the
+  instruction covers one.
+- Do not quietly reintroduce the parts they declined, and do not soften them
+  into "consider also".
+- If their note is ambiguous about a specific part, pick the narrower reading
+  and say in `notes` which way you read it.
+- If doing the part they accepted genuinely forces a change they did not
+  mention — a test that stops compiling, a caller that breaks — include it and
+  flag it in `notes`. That is a consequence, not an expansion.
+- If what they have asked for will not work, say so in `notes`. Still write the
+  instruction for what they asked.
+
+# Output
+
+Two blocks and nothing else.
+
+The instruction, self-contained, for someone working in a fresh session with no
+knowledge of this conversation. State the file and the change, what to leave
+alone, how to verify, and which test to add or update. Name what is
+deliberately out of scope so nobody helpfully adds it back:
+
+<INSTRUCTION>
+...
+</INSTRUCTION>
+
+The reply to the commenter, as the author speaking. It must say plainly which
+part is being taken and which is not, and why. Do not thank them twice, do not
+apologise, do not hedge the refusal into vagueness. If they were right about
+something, say that clearly:
+
+<REPLY>
+...
+</REPLY>
+
+Anything you want the author to know that belongs in neither block goes here.
+Omit it entirely if there is nothing worth saying:
+
+<NOTES>
+...
+</NOTES>"""
+
+
+def _block(text, tag):
+    open_t, close_t = f"<{tag}>", f"</{tag}>"
+    if open_t not in text or close_t not in text:
+        return ""
+    return text.split(open_t, 1)[1].split(close_t, 1)[0].strip()
+
+
+async def refine(number, thread_id, note):
+    """Turn the author's partial-agreement note into an instruction and a reply."""
+    pr, thread = find_thread(number, thread_id)
+    if pr is None:
+        return {"ok": False, "error": "not one of your open PRs"}
+    if thread is None:
+        return {"ok": False, "error": "that thread is no longer outstanding"}
+
+    where = f" on {thread['path']}:{thread['line']}" if thread.get("path") else ""
+    prompt = _REFINE_PROMPT.format(
+        number=number, title=pr["title"], repo=config.repo(),
+        author=thread["author"], where=where, body=thread["body"], note=note,
+    )
+
+    async with _ANALYSIS_SEM:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--allowedTools", "Bash(gh pr diff:*)", "Bash(gh pr view:*)",
+            "Read", "Grep", "Glob",
+            cwd=str(PROJECT_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=420)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"ok": False, "error": "timed out refining the instruction"}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+
+    out = stdout.decode(errors="replace")
+    instruction = _block(out, "INSTRUCTION")
+    if not instruction:
+        return {"ok": False, "error": "no <INSTRUCTION> block in output"}
+    reply_draft = _block(out, "REPLY")
+    notes = _block(out, "NOTES")
+
+    with db.conn() as c:
+        c.execute(
+            """INSERT INTO thread_refinements
+                 (pr_number, thread_id, note, instruction, reply_draft)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(pr_number, thread_id) DO UPDATE SET
+                 note=excluded.note, instruction=excluded.instruction,
+                 reply_draft=excluded.reply_draft, handoff_path=NULL,
+                 created_at=datetime('now')""",
+            (number, str(thread_id), note, instruction, reply_draft),
+        )
+    db.log_action(number, "thread_refined", f"thread {thread_id}")
+    return {
+        "ok": True, "instruction": instruction,
+        "reply_draft": reply_draft, "notes": notes,
+    }
+
+
+def write_handoff(number, thread_id):
+    """Write the refined instruction to a file a Claude Code session can read.
+
+    Deliberately outside the target checkout: dropping files into the repo would
+    show up in `git status` and risk being committed. The user pastes the path
+    into a session running in their checkout instead.
+    """
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT * FROM thread_refinements WHERE pr_number=? AND thread_id=?",
+            (number, str(thread_id)),
+        ).fetchone()
+    if row is None or not row["instruction"]:
+        return {"ok": False, "error": "nothing refined for this thread yet"}
+
+    HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
+    path = HANDOFF_DIR / f"pr-{number}-thread-{thread_id}.md"
+    path.write_text(
+        f"# PR #{number} — feedback to act on\n\n"
+        f"Repo: {config.repo()}\n"
+        f"PR: https://github.com/{config.repo()}/pull/{number}\n\n"
+        f"## What the author decided\n\n{row['note']}\n\n"
+        f"## Instruction\n\n{row['instruction']}\n"
+    )
+    with db.conn() as c:
+        c.execute(
+            "UPDATE thread_refinements SET handoff_path=? "
+            "WHERE pr_number=? AND thread_id=?",
+            (str(path), number, str(thread_id)),
+        )
+    return {"ok": True, "path": str(path)}
 

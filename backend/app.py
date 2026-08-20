@@ -277,6 +277,31 @@ async def reply_to_thread(number: int, thread_id: str, payload: ThreadReplyIn):
     return {"ok": True}
 
 
+class RefineIn(BaseModel):
+    note: str
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/refine")
+async def refine_thread(number: int, thread_id: str, payload: RefineIn):
+    """Turn "I'll take this bit but not that bit" into something actionable."""
+    note = (payload.note or "").strip()
+    if not note:
+        raise HTTPException(400, "say what you want to do with it first")
+    result = await my_prs.refine(number, thread_id, note)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/handoff")
+async def handoff_thread(number: int, thread_id: str):
+    """Write the refined instruction out for a Claude Code session to pick up."""
+    result = my_prs.write_handoff(number, thread_id)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
 @app.get("/api/my_prs/{number}/threads/{thread_id}/chat")
 async def get_thread_chat(number: int, thread_id: str):
     return {"messages": chat.scoped_history(f"thread:{number}:{thread_id}")}
