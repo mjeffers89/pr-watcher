@@ -78,6 +78,19 @@ CREATE TABLE IF NOT EXISTS my_pr_actions (
   PRIMARY KEY (pr_number, thread_id)
 );
 
+-- A drafted "please review this" message for one of the user's own PRs.
+-- Kept so the summary line survives a refresh and can be edited before it goes
+-- anywhere. One per PR; re-drafting replaces it.
+CREATE TABLE IF NOT EXISTS review_requests (
+  pr_number INTEGER PRIMARY KEY,
+  summary TEXT NOT NULL,   -- the one-line "why this matters" opener
+  title TEXT NOT NULL,
+  url TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft', -- draft | sent
+  sent_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,

@@ -172,6 +172,10 @@ def gather(self_login):
             (r["pr_number"], r["thread_id"]): r
             for r in c.execute("SELECT * FROM my_pr_actions").fetchall()
         }
+        requests = {
+            r["pr_number"]: dict(r)
+            for r in c.execute("SELECT * FROM review_requests").fetchall()
+        }
 
     out = []
     for p in prs:
@@ -192,6 +196,7 @@ def gather(self_login):
             "size": (d.get("additions") or 0) + (d.get("deletions") or 0),
             "threads": threads,
             "category": _categorise(p, checks, threads),
+            "review_request": requests.get(p["number"]),
         })
     return out
 
@@ -343,3 +348,135 @@ async def analyse(number):
             )
     db.log_action(number, "my_pr_triaged", f"{len(items)} threads")
     return {"ok": True, "count": len(items)}
+
+_REQUEST_PROMPT = """Write the one line of context that goes above a review
+request for PR #{number} ("{title}") in `{repo}`.
+
+**Ignore any skills or CLAUDE.md files in scope.** They are not part of this task.
+
+Read the PR first:
+
+```bash
+gh pr diff {number} --repo {repo}
+gh pr view {number} --repo {repo} --json title,body
+```
+
+This is being dropped into a busy team channel. The title and a link sit
+underneath it, so do not restate the title. The line's only job is to tell a
+colleague scrolling past why they should pick this up, in the words they would
+use themselves.
+
+What works:
+
+- Where it sits in a bigger piece of work. "Last bit of adding time tracking to
+  events." "First of three on the CSV importer."
+- What it unblocks, if that is the reason to look now.
+- A warning if the change is riskier or larger than the title suggests.
+
+What does not:
+
+- Restating the title in different words.
+- "This PR adds..." or "This change..." — start with the substance.
+- Identifiers, file paths, class names, line counts, percentages.
+- Selling it. No "quick one", no "should be straightforward", no "easy review"
+  unless it genuinely is trivial and you can say why in the same breath.
+
+One sentence. Two only if the second earns it. Sentence case, British English,
+no em-dashes, no trailing full stop if it reads as a fragment.
+
+If the PR is part of a numbered series or names a parent ticket in its body, say
+so — that is usually the most useful thing a reviewer can know.
+
+Output only the line, wrapped in markers, nothing else:
+
+<SUMMARY>
+your line here
+</SUMMARY>"""
+
+
+async def draft_review_request(number):
+    """Write and store the review-request blurb for one of the user's PRs."""
+    prs = {p["number"]: p for p in gather(config.self_login())}
+    pr = prs.get(number)
+    if pr is None:
+        return {"ok": False, "error": "not one of your open PRs"}
+
+    prompt = _REQUEST_PROMPT.format(
+        number=number, title=pr["title"], repo=config.repo()
+    )
+    async with _ANALYSIS_SEM:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--allowedTools", "Bash(gh pr diff:*)", "Bash(gh pr view:*)",
+            "Read", "Grep", "Glob",
+            cwd=str(PROJECT_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"ok": False, "error": "timed out drafting the summary"}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+
+    out = stdout.decode(errors="replace")
+    if "<SUMMARY>" not in out:
+        return {"ok": False, "error": "no <SUMMARY> block in output"}
+    summary = out.split("<SUMMARY>", 1)[1].split("</SUMMARY>", 1)[0].strip()
+    if not summary:
+        return {"ok": False, "error": "empty summary"}
+
+    with db.conn() as c:
+        c.execute(
+            """INSERT INTO review_requests (pr_number, summary, title, url, status)
+               VALUES (?, ?, ?, ?, 'draft')
+               ON CONFLICT(pr_number) DO UPDATE SET
+                 summary=excluded.summary, title=excluded.title,
+                 url=excluded.url, status='draft', sent_at=NULL,
+                 created_at=datetime('now')""",
+            (number, summary, pr["title"], pr["url"]),
+        )
+    db.log_action(number, "review_request_drafted", summary[:200])
+    return {"ok": True, "summary": summary, "title": pr["title"], "url": pr["url"]}
+
+
+def format_request(summary, title, url):
+    """The message as it goes into the channel.
+
+    Summary, then title, then the bare link on its own line so Teams unfurls it
+    into a card. The card repeats the title, which is why the title line is not
+    itself a hyperlink: a linked title plus an unfurled card reads as a mistake.
+    """
+    return f"{summary}\n\n{title}\n{url}"
+
+
+def send_to_teams(number, summary, title, url):
+    """POST the message to the configured Teams channel webhook."""
+    hook = config.teams_webhook_url()
+    if not hook:
+        return {"ok": False, "error": "no Teams webhook configured"}
+    text = format_request(summary, title, url)
+    body = json.dumps({"text": text})
+    r = subprocess.run(
+        ["curl", "-sS", "-X", "POST", "-H", "Content-Type: application/json",
+         "-d", body, "--max-time", "30", "-w", "\n%{http_code}", hook],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return {"ok": False, "error": (r.stderr or "curl failed").strip()}
+    parts = (r.stdout or "").rsplit("\n", 1)
+    code = parts[-1].strip()
+    if not code.startswith("2"):
+        return {"ok": False, "error": f"Teams returned HTTP {code}: {parts[0][:300]}"}
+    with db.conn() as c:
+        c.execute(
+            "UPDATE review_requests SET status='sent', sent_at=datetime('now') "
+            "WHERE pr_number=?",
+            (number,),
+        )
+    db.log_action(number, "review_request_sent", config.teams_channel_label())
+    return {"ok": True}

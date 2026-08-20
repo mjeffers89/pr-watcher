@@ -505,14 +505,70 @@
                     <span x-show="triaging !== pr.number">Work out what to do</span>
                     <span x-show="triaging === pr.number">Reading…</span>
                   </button>
+                  <button x-show="bucket.key === 'push' && !pr.review_request"
+                          @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
+                          class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                    <span x-text="drafting === pr.number ? 'Writing…' : 'Draft a review request'"></span>
+                  </button>
                   <a x-show="bucket.key === 'push'" :href="pr.url"
-                     class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                    Add a reviewer
+                     class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-50">
+                    Open on GitHub
                   </a>
                 </div>
               </div>
 
               <div x-show="pr.merge_error" class="mt-2 text-xs text-red-600" x-text="pr.merge_error"></div>
+
+              <!-- Drafted review request, exactly as it will land in the channel -->
+              <template x-if="pr.review_request">
+                <div class="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
+                  <div class="flex items-center justify-between gap-2 mb-2">
+                    <div class="text-xs font-medium text-blue-900">
+                      Review request
+                      <span x-show="pr.review_request.status === 'sent'"
+                            class="ml-1 text-blue-700">· already sent</span>
+                    </div>
+                    <button @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
+                            class="text-xs text-blue-700 hover:text-blue-900 underline disabled:opacity-60">
+                      <span x-text="drafting === pr.number ? 'Rewriting…' : 'Rewrite'"></span>
+                    </button>
+                  </div>
+
+                  <div class="text-xs text-slate-500 mb-1">Context line — edit freely</div>
+                  <textarea x-model="pr.review_request.summary" rows="2"
+                            class="w-full text-sm px-3 py-2 rounded-md border border-slate-300 mb-2"></textarea>
+
+                  <div class="text-xs text-slate-500 mb-1">How it will look</div>
+                  <div @click="selectAll($el)" title="Click to select all"
+                       class="text-sm bg-white rounded-md p-3 border border-blue-100 cursor-text">
+                    <div class="text-slate-800" x-text="pr.review_request.summary"></div>
+                    <div class="mt-2 text-slate-900" x-text="pr.review_request.title"></div>
+                    <div class="text-blue-700 break-all" x-text="pr.review_request.url"></div>
+                  </div>
+
+                  <div class="flex flex-wrap gap-2 mt-2">
+                    <button x-show="teamsConfigured"
+                            @click="sendRequest(pr.number, pr.review_request)"
+                            :disabled="sending === pr.number"
+                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                      <span x-text="sending === pr.number
+                        ? 'Posting…'
+                        : 'Post to Teams — ' + teamsChannel"></span>
+                    </button>
+                    <button @click="copyText(requestText(pr.review_request), 'req-' + pr.number)"
+                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                      <span x-text="copied === ('req-' + pr.number) ? 'Copied' : 'Copy for Teams'"></span>
+                    </button>
+                  </div>
+
+                  <div x-show="!teamsConfigured" class="text-xs text-blue-800 mt-2">
+                    No Teams webhook set up yet, so there is nothing to post to. Copy it for
+                    now, or add a Workflows webhook on the Squad Arete channel and put the URL
+                    in <code class="bg-white px-1 rounded">~/.pr-watcher/config.json</code>
+                    as <code class="bg-white px-1 rounded">teams_webhook_url</code>.
+                  </div>
+                </div>
+              </template>
 
               <!-- Outstanding feedback, one card per thread -->
               <div x-show="pr.threads.length > 0" class="mt-3 space-y-2">
@@ -723,6 +779,10 @@ function app() {
     myTriageLoading: false,
     myTriageError: '',
     triaging: null,
+    drafting: null,
+    sending: null,
+    teamsConfigured: false,
+    teamsChannel: 'Teams',
     replying: null,
     copied: null,
     repoDir: '',
@@ -771,6 +831,52 @@ function app() {
         this.myTriageError = String(e);
       } finally {
         this.myTriageLoading = false;
+      }
+    },
+
+    // The message as it will land in the channel: context line, blank line,
+    // title, bare link. Teams unfurls the link into a card of its own.
+    requestText(r) {
+      return `${r.summary}\n\n${r.title}\n${r.url}`;
+    },
+
+    async draftRequest(number) {
+      this.drafting = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/review_request`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not draft it (${r.status})`;
+        } else {
+          await this.loadMyTriage();
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.drafting = null;
+      }
+    },
+
+    async sendRequest(number, req) {
+      this.sending = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/review_request/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ summary: req.summary }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Post failed (${r.status})`;
+        } else {
+          req.status = 'sent';
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.sending = null;
       }
     },
 
@@ -1033,6 +1139,8 @@ function app() {
         const m = await r.json();
         this.repo = m.repo || '';
         this.repoDir = m.target_repo_dir || '';
+        this.teamsConfigured = !!m.teams_configured;
+        this.teamsChannel = m.teams_channel_label || 'Teams';
       } catch (e) { /* non-fatal — links just won't render until meta loads */ }
     },
 

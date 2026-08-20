@@ -126,5 +126,21 @@ def target_repo_dir() -> str | None:
     return _get("target_repo_dir", "PRW_TARGET_REPO_DIR")
 
 
+def teams_webhook_url() -> str | None:
+    """Incoming webhook for the Teams channel review requests are posted to.
+
+    Microsoft retired the classic Office 365 connector, so in practice this is
+    the URL from a Teams "Workflows" (Power Automate) trigger on the channel.
+    Unset means the UI offers copy-to-clipboard instead of a send button.
+    """
+    return _get("teams_webhook_url", "PRW_TEAMS_WEBHOOK_URL")
+
+
+def teams_channel_label() -> str:
+    """Channel name shown on the send button, so the button says where it goes."""
+    return _get("teams_channel_label", "PRW_TEAMS_CHANNEL_LABEL", "Teams")
+
+
 def port() -> int:
     return int(_get("port", "PRW_PORT", "4747"))
+

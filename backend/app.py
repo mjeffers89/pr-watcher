@@ -160,6 +160,9 @@ def meta():
         # Where the user's checkout lives, so the My PRs tab can name the
         # directory to run a suggested fix in rather than saying "your repo".
         "target_repo_dir": config.target_repo_dir(),
+        # Whether the Teams send button can work, and what it should say.
+        "teams_configured": bool(config.teams_webhook_url()),
+        "teams_channel_label": config.teams_channel_label(),
     }
 
 
@@ -207,6 +210,40 @@ async def triage_my_pr(number: int):
     if not result["ok"]:
         raise HTTPException(400, result["error"])
     return result
+
+
+class ReviewRequestIn(BaseModel):
+    summary: str
+
+
+@app.post("/api/my_prs/{number}/review_request")
+async def draft_review_request(number: int):
+    """Write the one-line context blurb for a review request."""
+    result = await my_prs.draft_review_request(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/review_request/send")
+async def send_review_request(number: int, payload: ReviewRequestIn):
+    """Post the review request into the configured Teams channel.
+
+    Only ever reached by a button press. The summary comes from the request
+    body rather than the stored draft so the user's edits are what gets sent.
+    """
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT * FROM review_requests WHERE pr_number=?", (number,)
+        ).fetchone()
+    if row is None:
+        raise HTTPException(404, "no drafted request for this PR")
+    summary = (payload.summary or "").strip() or row["summary"]
+    result = my_prs.send_to_teams(number, summary, row["title"], row["url"])
+    if not result["ok"]:
+        raise HTTPException(500, result["error"])
+    watchers.notify(f"Posted a review request for #{number}")
+    return {"ok": True}
 
 
 class ThreadReplyIn(BaseModel):
