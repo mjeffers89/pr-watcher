@@ -230,8 +230,17 @@ async def mark_ready(number: int):
 
 
 @app.post("/api/my_prs/{number}/triage")
-async def triage_my_pr(number: int):
-    result = await my_prs.analyse(number)
+async def triage_my_pr(number: int, only_missing: bool = False):
+    result = await my_prs.analyse(number, only_missing=only_missing)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/threads/{thread_id}/triage")
+async def triage_one_thread(number: int, thread_id: str):
+    """Work out a single comment, for the ones a whole-PR pass returned nothing for."""
+    result = await my_prs.analyse(number, thread_id=thread_id)
     if not result["ok"]:
         raise HTTPException(400, result["error"])
     return result

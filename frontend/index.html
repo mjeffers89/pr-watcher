@@ -535,11 +535,15 @@
                       <span x-show="!pr.merging">Merge</span>
                       <span x-show="pr.merging">Merging…</span>
                     </button>
-                    <button x-show="bucket.key === 'comments' && !pr.threads.some(t => t.analysis)"
-                            @click="triagePr(pr.number)" :disabled="triaging === pr.number"
+                    <button x-show="bucket.key === 'comments' && untriagedCount(pr) > 0"
+                            @click="triagePr(pr.number, pr.threads.some(t => t.analysis))"
+                            :disabled="triaging === pr.number"
                             class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
-                      <span x-show="triaging !== pr.number">Work out what to do</span>
                       <span x-show="triaging === pr.number">Reading…</span>
+                      <span x-show="triaging !== pr.number"
+                            x-text="pr.threads.some(t => t.analysis)
+                              ? 'Work out the other ' + untriagedCount(pr)
+                              : 'Work out what to do'"></span>
                     </button>
                     <button x-show="(bucket.key === 'push' || (bucket.key === 'waiting' && daysSince(pr.waiting_since) >= 3)) && !pr.review_request"
                             @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
@@ -738,9 +742,32 @@
                     <!-- Expanded -->
                     <div x-show="openThread === t.root_id" class="px-4 pb-4">
 
-                      <div x-show="!t.analysis" class="text-sm text-slate-700 whitespace-pre-wrap
-                                  bg-slate-50 rounded-md p-3 border border-slate-200 max-h-48 overflow-y-auto"
-                           x-text="t.body"></div>
+                      <template x-if="!t.analysis">
+                        <div>
+                          <div class="text-sm text-slate-700 bg-slate-50 rounded-md p-3 border border-slate-200 max-h-64 overflow-y-auto"
+                               x-html="renderMd(t.body)"></div>
+                          <div class="mt-3 pt-3 border-t border-slate-100">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                              What now
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                              <button @click="triageThread(pr.number, t)"
+                                      :disabled="triagingThread === t.root_id"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                                <span x-text="triagingThread === t.root_id ? 'Reading…' : 'Work out what to do with this'"></span>
+                              </button>
+                              <button @click="toggleThreadChat(pr.number, t)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                                Talk it through
+                              </button>
+                              <button @click="skipThread(pr.number, t)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-slate-100 hover:bg-slate-200">
+                                Skip
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
 
                       <template x-if="t.analysis">
                         <div>
@@ -1119,6 +1146,7 @@ function app() {
     myTriageLoading: false,
     myTriageError: '',
     triaging: null,
+    triagingThread: null,
     rerunning: null,
     readying: null,
     drafting: null,
@@ -1305,7 +1333,13 @@ function app() {
         const first = t.analysis.summary.split(/(?<=[.!?])\s/)[0] || t.analysis.summary;
         return first.length > 90 ? first.slice(0, 87) + '…' : first;
       }
-      const body = (t.body || '').replace(/\s+/g, ' ').trim();
+      const body = (t.body || '')
+        .replace(/^#{1,6}\s+/gm, '')
+        .replace(/[*_`>]/g, '')
+        .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/^\s*[-–—]{2,}\s*$/gm, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
       return body.length > 90 ? body.slice(0, 87) + '…' : (body || 'A comment');
     },
 
@@ -1698,15 +1732,45 @@ function app() {
       }
     },
 
-    async triagePr(number) {
+    untriagedCount(pr) {
+      return pr.threads.filter(t => !t.analysis).length;
+    },
+
+    async triageThread(number, t) {
+      this.triagingThread = t.root_id;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/threads/${t.root_id}/triage`,
+                              { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not work it out (${r.status})`;
+        } else {
+          await this.loadMyTriage();
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.triagingThread = null;
+      }
+    },
+
+    async triagePr(number, onlyMissing) {
       this.triaging = number;
       this.myTriageError = '';
       try {
-        const r = await fetch(`/api/my_prs/${number}/triage`, { method: 'POST' });
+        const url = `/api/my_prs/${number}/triage` + (onlyMissing ? '?only_missing=true' : '');
+        const r = await fetch(url, { method: 'POST' });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
           this.myTriageError = e.detail || `Triage failed (${r.status})`;
         } else {
+          const data = await r.json();
+          if (data.missed > 0) {
+            this.myTriageError =
+              `${data.missed} of ${data.asked} comments came back with nothing. ` +
+              `Open them and use "Work out what to do with this".`;
+          }
           await this.loadMyTriage();
         }
       } catch (e) {

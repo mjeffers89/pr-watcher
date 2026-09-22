@@ -544,16 +544,30 @@ async def triage(number, title, threads):
     return {"ok": True, "items": items}
 
 
-async def analyse(number):
-    """Triage one of the user's own PRs and store the result."""
+async def analyse(number, thread_id=None, only_missing=False):
+    """Triage one of the user's own PRs and store the result.
+
+    `thread_id` triages a single comment, and `only_missing` the ones a previous
+    pass returned nothing for. A run over a dozen comments can quietly come back
+    with eleven, and the twelfth was then stuck: no summary, no buttons, and the
+    PR-level button hidden because some threads did have an analysis.
+    """
     prs = {p["number"]: p for p in gather(config.self_login())}
     pr = prs.get(number)
     if pr is None:
         return {"ok": False, "error": "not one of your open PRs"}
-    if not pr["threads"]:
-        return {"ok": False, "error": "nothing outstanding on this PR"}
 
-    res = await triage(number, pr["title"], pr["threads"])
+    threads = pr["threads"]
+    if thread_id is not None:
+        threads = [t for t in threads if str(t["root_id"]) == str(thread_id)]
+        if not threads:
+            return {"ok": False, "error": "that comment is no longer outstanding"}
+    elif only_missing:
+        threads = [t for t in threads if not t.get("analysis")]
+    if not threads:
+        return {"ok": False, "error": "nothing left to work out on this PR"}
+
+    res = await triage(number, pr["title"], threads)
     if not res["ok"]:
         return res
     items = res["items"]
@@ -585,8 +599,15 @@ async def analyse(number):
                     it.get("confidence", "medium"),
                 ),
             )
-    db.log_action(number, "my_pr_triaged", f"{len(items)} threads")
-    return {"ok": True, "count": len(items)}
+    db.log_action(number, "my_pr_triaged", f"{len(items)} of {len(threads)} threads")
+    # A pass that silently returns fewer items than it was given is the failure
+    # that stranded a comment, so say so rather than reporting success.
+    return {
+        "ok": True,
+        "count": len(items),
+        "asked": len(threads),
+        "missed": max(0, len(threads) - len(items)),
+    }
 
 _REQUEST_PROMPT = """Write the one line of context that goes above a review
 request for PR #{number} ("{title}") in `{repo}`.
