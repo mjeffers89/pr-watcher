@@ -106,6 +106,47 @@ def _checks_state(rollup):
     return "green"
 
 
+# Paths that mean this PR carries something the author must not run themselves.
+# Matched on exact directory prefixes and filename parts rather than loose
+# keywords: "task" appears in app/policies/tasks/, and a warning that fires on
+# ordinary code is a warning people learn to scroll past.
+def _risk_flags(files):
+    """Operational risks in a PR that change who should be pressing the button."""
+    paths = [f.get("path", "") for f in files or []]
+    backfills = [
+        p for p in paths
+        if (p.startswith("lib/one_off/") or p.startswith("lib/manual_one_off/")
+            or "backfill" in p.rsplit("/", 1)[-1].lower())
+        and not p.startswith("test/")
+    ]
+    migrations = [p for p in paths if p.startswith("db/migrate/")]
+    flags = []
+    if backfills:
+        flags.append({
+            "level": "major",
+            "label": "Do not run this yourself",
+            "detail": (
+                "This adds a data backfill. It needs an engineer to run it, on a "
+                "dry run first and coordinated with CALM — a bundled backfill "
+                "erroring on deploy has blocked the release train before. Raise "
+                "it as its own PR and hand it over rather than running it."
+            ),
+            "files": backfills,
+        })
+    if migrations:
+        flags.append({
+            "level": "major" if backfills else "warn",
+            "label": "Changes the database schema",
+            "detail": (
+                "Migrations here need a dev to run and Strong Migrations will not "
+                "catch everything. Reverting the PR does not undo a migration that "
+                "has already run."
+            ),
+            "files": migrations,
+        })
+    return flags
+
+
 def _failing_checks(rollup):
     """The checks actually standing in the way, with a link and their run id.
 
@@ -249,7 +290,8 @@ def gather(self_login):
         p["number"]: p for p in _gh_json([
             "gh", "pr", "list", "--repo", config.repo(), "--author", self_login,
             "--state", "open", "--limit", "50",
-            "--json", "number,statusCheckRollup,updatedAt,additions,deletions",
+            "--json",
+            "number,statusCheckRollup,updatedAt,additions,deletions,files",
         ])
     }
     with db.conn() as c:
@@ -293,6 +335,7 @@ def gather(self_login):
             "category": _categorise(p, checks, threads, info["engaged"]),
             "open_count": len(_open_threads(threads)),
             "failing_checks": _failing_checks(d.get("statusCheckRollup")),
+            "risks": _risk_flags(d.get("files")),
             "waiting_since": info["last_self_comment_at"],
             "review_request": requests.get(p["number"]),
             "bundle": bundles.get(p["number"]),

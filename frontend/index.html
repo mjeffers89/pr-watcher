@@ -479,6 +479,42 @@
             <div class="bg-white border rounded-xl" :class="bucket.ring"
                  :id="'mypr-' + pr.number">
 
+              <!-- Operational risk sits above everything, including the title.
+                   The point of it is to be seen before the PR is thought about. -->
+              <template x-for="risk in (pr.risks || [])" :key="risk.label">
+                <div class="px-4 py-3 border-b"
+                     :class="risk.level === 'major'
+                       ? 'bg-red-50 border-red-200'
+                       : 'bg-amber-50 border-amber-200'">
+                  <div class="flex items-start gap-2">
+                    <span class="shrink-0 text-lg leading-none mt-0.5"
+                          x-text="risk.level === 'major' ? '⛔' : '⚠️'"></span>
+                    <div class="min-w-0">
+                      <div class="text-sm font-semibold"
+                           :class="risk.level === 'major' ? 'text-red-900' : 'text-amber-900'"
+                           x-text="risk.label"></div>
+                      <p class="text-sm mt-0.5 leading-relaxed"
+                         :class="risk.level === 'major' ? 'text-red-800' : 'text-amber-800'"
+                         x-text="risk.detail"></p>
+                      <button @click="openRisk = openRisk === (pr.number + risk.label) ? null : (pr.number + risk.label)"
+                              class="text-xs underline mt-1"
+                              :class="risk.level === 'major' ? 'text-red-700' : 'text-amber-700'">
+                        <span x-text="openRisk === (pr.number + risk.label)
+                          ? 'Hide the files'
+                          : risk.files.length + (risk.files.length === 1 ? ' file' : ' files')"></span>
+                      </button>
+                      <ul x-show="openRisk === (pr.number + risk.label)" class="mt-1 space-y-0.5">
+                        <template x-for="f in risk.files" :key="f">
+                          <li class="text-xs font-mono"
+                              :class="risk.level === 'major' ? 'text-red-800' : 'text-amber-800'"
+                              x-text="f"></li>
+                        </template>
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
               <!-- Header: what this PR is and what it needs, on two lines -->
               <div class="p-4">
                 <div class="flex items-start justify-between gap-3">
@@ -1148,6 +1184,7 @@ function app() {
 
     // One fact per row — the thing that decides whether to click it.
     sidebarFact(p) {
+      if ((p.risks || []).some(r => r.level === 'major')) return 'do not run this yourself';
       if (p.category === 'comments') {
         const n = p.open_count !== undefined
           ? p.open_count
@@ -1200,6 +1237,7 @@ function app() {
     openThread: null,
     openAction: null,
     openRequest: null,
+    openRisk: null,
 
     // Plain-English state chips. Each says what it means for the reader rather
     // than naming the mechanism: "nobody assigned" beats "reviewDecision: ''".
@@ -1229,6 +1267,10 @@ function app() {
       } else if (pr.checks === 'green') {
         chips.push({ text: 'build passing',
                      tone: 'bg-slate-100 text-slate-600 border-slate-200' });
+      }
+      if ((pr.risks || []).some(r => r.level === 'major')) {
+        chips.push({ text: 'hand to a dev',
+                     tone: 'bg-red-100 text-red-800 border-red-300' });
       }
       if (pr.category === 'waiting') {
         const days = this.daysSince(pr.waiting_since);
