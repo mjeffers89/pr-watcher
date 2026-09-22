@@ -315,11 +315,25 @@ Then write, for each:
 - `unknowns` — one sentence naming what you could not check for yourself and
   would change the answer, or an empty string when the diff really does settle
   it. Do not pad this; an empty string is fine when it is true.
-- `recommendation` — two or three sentences. Lead with what to do in plain
-  words: "Take it", "I'd explain rather than change it", "Already handled",
-  "I can't tell from here". Then the reason. Where you disagree, the reason
-  must name the thing they would have had to not know, not merely restate your
-  preference.
+- `recommendation` — two or three sentences. It must open with the exact
+  phrase for its action, so the opener and the badge never disagree and the
+  reader learns the four of them:
+
+  | action | opening phrase |
+  |---|---|
+  | `code_fix` | `Follow their suggestion.` |
+  | `reply` | `Explain, don't change it.` |
+  | `unsure` | `I can't tell from here.` |
+  | `no_action` | `Nothing to do.` |
+
+  Then the reason, in the same sentence or the next. Where you disagree, the
+  reason must name the thing they would have had to not know, not merely
+  restate your preference. Where you agree, say what specifically convinced
+  you, so the author can check the judgement rather than take it on trust.
+
+  Never open with a bare pronoun — "Take it", "Do it", "Leave it" — which reads
+  as a verdict handed down rather than a recommendation with a reason behind
+  it.
 - `reply_draft` — the message to send, written as the PR author speaking to the
   commenter. It gets read on a phone between meetings, so structure it:
 
