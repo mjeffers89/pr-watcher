@@ -91,6 +91,8 @@ CREATE TABLE IF NOT EXISTS my_pr_actions (
   action TEXT NOT NULL,         -- code_fix | reply | no_action
   headline TEXT,                -- <=10 words, so a thread can be scanned shut
   wants TEXT,                   -- JSON array of 1-3 short bullets
+  their_case TEXT,              -- why a competent reviewer would raise this
+  unknowns TEXT,                -- what the triage could not check for itself
   summary TEXT,
   recommendation TEXT,
   reply_draft TEXT,

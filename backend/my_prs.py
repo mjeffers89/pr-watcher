@@ -259,13 +259,40 @@ their merits, exactly as you would a colleague's.
 
 # What to produce
 
+# Who you are disagreeing with
+
+These reviewers are senior engineers on this codebase. They have context you do
+not: how this area behaves in production, what was tried before, what the team
+agreed last month. You are reading a diff. They are not always right, but the
+prior is that they raised it for a reason.
+
+So disagreement has to be earned:
+
+- Before you argue, work out what a competent person would have been thinking.
+  If you cannot construct that, you have not understood the comment yet.
+- Then name the specific thing they would have had to not know for your
+  position to hold — a file they cannot see from the diff, a convention
+  elsewhere in the codebase, a constraint from another PR. **If you cannot name
+  it, they are probably right and you should say so.** "I think this is fine"
+  is not a reason.
+- Never argue from the mere absence of a problem. "Nothing breaks today" is an
+  observation, not a case.
+- Pushing back is not free. It costs the author a round trip, and if the
+  reviewer turns out to be right it reads as dodging the work. Recommend it
+  only when you would still recommend it knowing that.
+
 For each comment, decide what it actually needs:
 
-- `code_fix` — the comment is right and the code should change.
-- `reply` — no code change needed, but it deserves an answer: a question to
-  answer, a disagreement to make, or context the commenter is missing.
+- `code_fix` — they are right and the code should change. This is the correct
+  answer more often than it feels, especially for anything about where code
+  lives, naming, or test coverage.
+- `reply` — no code change needed, but it deserves an answer, and you can name
+  what they would have had to not know.
+- `unsure` — you cannot tell from here. The answer turns on something you
+  cannot check: how it behaves at scale, what was agreed previously, whether a
+  convention holds elsewhere. Say what you would need to know. This is a real
+  answer, not a failure, and it is better than a confident wrong one.
 - `no_action` — informational, already handled, or resolved by a later commit.
-  Say so and move on.
 
 Then write, for each:
 
@@ -281,14 +308,33 @@ Then write, for each:
   someone who read the bullets and wants the rest. Two or three sentences. No
   identifiers, paths or line numbers in this field. The reader is not an
   engineer. Say what it means for the change, not what the code says.
-- `recommendation` — one or two sentences on what you would do and why. Lead
-  with the verdict — "Take it", "Push back", "Already handled" — then the
-  reason. If you think the comment is wrong, say that plainly.
-- `reply_draft` — for `reply`, the message to send, written as the PR author
-  speaking to the commenter. Direct and courteous, no throat-clearing, no
-  apologising for existing. If you are pushing back, give the actual reason.
-  For `code_fix`, the short holding reply that says what you are going to do.
-  Empty string for `no_action`.
+- `their_case` — one sentence, under twenty-five words, on why a reviewer who
+  knows this codebase would raise this. Written straight, not as a strawman you
+  are about to knock over. Required on every comment, including the ones you
+  agree with.
+- `unknowns` — one sentence naming what you could not check for yourself and
+  would change the answer, or an empty string when the diff really does settle
+  it. Do not pad this; an empty string is fine when it is true.
+- `recommendation` — two or three sentences. Lead with what to do in plain
+  words: "Take it", "I'd explain rather than change it", "Already handled",
+  "I can't tell from here". Then the reason. Where you disagree, the reason
+  must name the thing they would have had to not know, not merely restate your
+  preference.
+- `reply_draft` — the message to send, written as the PR author speaking to the
+  commenter. It gets read on a phone between meetings, so structure it:
+
+  1. One line saying where you land. Not a preamble, the actual position.
+  2. Two to four markdown bullets carrying the reasons, one point each. Short
+     enough to scan. This is the part people actually read.
+  3. Where you are disagreeing, a line starting "What would change my mind:"
+     naming what would flip you. This makes the disagreement checkable instead
+     of a matter of taste, and it hands them the fastest route to settling it.
+  4. Where relevant, the offer — what you will do if they still disagree.
+
+  Direct and courteous. No throat-clearing, no apologising for existing, no
+  thanking them twice. For `code_fix`, the same shape but shorter: what you are
+  changing and anything you are deliberately not changing. For `unsure`, ask
+  the actual question. Empty string for `no_action`.
 - `fix_prompt` — a self-contained instruction someone could hand to Claude
   Code in the repo to make the change. Name the file and what to change, state
   how to verify it, and mention the test to add or update.
@@ -314,6 +360,8 @@ in the same order, each carrying the `thread_id` it belongs to:
 [{{"thread_id": "...", "action": "reply",
    "headline": "Where the permission rule lives",
    "wants": ["Move it out of the shared file", "Scope it to this feature"],
+   "their_case": "A per-feature flag on the class every controller inherits is a smell they have seen spread before",
+   "unknowns": "Whether the team has agreed a home for feature gates elsewhere",
    "summary": "...", "recommendation": "...",
    "reply_draft": "...", "fix_prompt": "...", "confidence": "high"}}]
 </ACTIONS>
@@ -390,12 +438,14 @@ async def analyse(number):
         for it in items:
             c.execute(
                 """INSERT INTO my_pr_actions
-                     (pr_number, thread_id, action, headline, wants, summary,
-                      recommendation, reply_draft, fix_prompt, confidence, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                     (pr_number, thread_id, action, headline, wants, their_case,
+                      unknowns, summary, recommendation, reply_draft, fix_prompt,
+                      confidence, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                    ON CONFLICT(pr_number, thread_id) DO UPDATE SET
                      action=excluded.action, headline=excluded.headline,
-                     wants=excluded.wants, summary=excluded.summary,
+                     wants=excluded.wants, their_case=excluded.their_case,
+                     unknowns=excluded.unknowns, summary=excluded.summary,
                      recommendation=excluded.recommendation,
                      reply_draft=excluded.reply_draft,
                      fix_prompt=excluded.fix_prompt,
@@ -405,6 +455,7 @@ async def analyse(number):
                     number, str(it.get("thread_id")), it.get("action", "reply"),
                     it.get("headline", ""),
                     json.dumps(it.get("wants") or []),
+                    it.get("their_case", ""), it.get("unknowns", ""),
                     it.get("summary", ""), it.get("recommendation", ""),
                     it.get("reply_draft", ""), it.get("fix_prompt", ""),
                     it.get("confidence", "medium"),
