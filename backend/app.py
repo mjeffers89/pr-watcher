@@ -213,6 +213,22 @@ def my_prs_triage_view():
     return {"prs": prs}
 
 
+@app.post("/api/my_prs/{number}/rerun_checks")
+async def rerun_checks(number: int):
+    result = my_prs.rerun_failed_checks(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/ready")
+async def mark_ready(number: int):
+    result = my_prs.mark_ready_for_review(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
 @app.post("/api/my_prs/{number}/triage")
 async def triage_my_pr(number: int):
     result = await my_prs.analyse(number)

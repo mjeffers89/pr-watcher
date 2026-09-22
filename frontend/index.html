@@ -513,6 +513,57 @@
                   </div>
                 </div>
                 <div x-show="pr.merge_error" class="mt-2 text-xs text-red-600" x-text="pr.merge_error"></div>
+
+                <!-- Blocked PRs used to say what was wrong and offer nothing -->
+                <div x-show="bucket.key === 'not_ready'" class="mt-3 pt-3 border-t border-slate-100">
+                  <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                    What's next
+                  </div>
+
+                  <div x-show="pr.failing_checks && pr.failing_checks.length" class="mb-3">
+                    <div class="text-sm text-slate-700 mb-1.5">
+                      <span x-text="pr.failing_checks.length"></span>
+                      <span x-text="pr.failing_checks.length === 1 ? 'check is failing' : 'checks are failing'"></span>
+                    </div>
+                    <ul class="space-y-1 mb-2">
+                      <template x-for="c in pr.failing_checks" :key="c.name">
+                        <li class="text-sm text-slate-800 flex gap-2">
+                          <span class="text-red-500">✕</span>
+                          <a :href="c.link" target="_blank" rel="noopener noreferrer"
+                             class="hover:underline" x-text="c.name"></a>
+                        </li>
+                      </template>
+                    </ul>
+                    <div class="flex flex-wrap gap-2">
+                      <button @click="rerunChecks(pr.number)" :disabled="rerunning === pr.number"
+                              class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                        <span x-text="rerunning === pr.number ? 'Starting…' : 'Re-run just the failed jobs'"></span>
+                      </button>
+                      <a :href="pr.failing_checks[0] && pr.failing_checks[0].link"
+                         target="_blank" rel="noopener noreferrer"
+                         class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                        See what broke
+                      </a>
+                    </div>
+                    <p class="text-xs text-slate-500 mt-2">
+                      Re-run first if it looks like a flake. If it fails the same way twice,
+                      it is the change rather than the build.
+                    </p>
+                  </div>
+
+                  <div x-show="pr.is_draft">
+                    <p class="text-sm text-slate-700 mb-2">
+                      Still a draft, so nobody is being asked to look at it.
+                    </p>
+                    <button @click="markReady(pr.number)" :disabled="readying === pr.number"
+                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                      <span x-text="readying === pr.number ? 'Marking…' : 'Mark it ready for review'"></span>
+                    </button>
+                    <p x-show="pr.checks === 'red'" class="text-xs text-amber-700 mt-2">
+                      Worth fixing the build first — reviewers filter out red PRs.
+                    </p>
+                  </div>
+                </div>
               </div>
 
               <!-- Review request: one line until you want it -->
@@ -612,8 +663,13 @@
 
               <!-- Comments: one scannable row each, opened one at a time -->
               <div x-show="pr.threads.length > 0" class="border-t border-slate-100">
-                <div class="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <div x-show="pr.open_count > 0"
+                     class="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
                   Waiting on you
+                </div>
+                <div x-show="pr.open_count === 0 && pr.threads.length > 0"
+                     class="px-4 py-3 text-sm text-slate-500">
+                  All <span x-text="pr.threads.length"></span> comments dealt with.
                 </div>
 
                 <template x-for="t in pr.threads" :key="t.root_id">
@@ -1027,6 +1083,8 @@ function app() {
     myTriageLoading: false,
     myTriageError: '',
     triaging: null,
+    rerunning: null,
+    readying: null,
     drafting: null,
     sending: null,
     teamsConfigured: false,
@@ -1091,7 +1149,9 @@ function app() {
     // One fact per row — the thing that decides whether to click it.
     sidebarFact(p) {
       if (p.category === 'comments') {
-        const n = p.threads.length - (p.decided_count || 0);
+        const n = p.open_count !== undefined
+          ? p.open_count
+          : p.threads.length - (p.decided_count || 0);
         return n === 1 ? '1 comment to decide' : `${n} comments to decide`;
       }
       if (p.category === 'waiting') {
@@ -1145,7 +1205,9 @@ function app() {
     // than naming the mechanism: "nobody assigned" beats "reviewDecision: ''".
     statusChips(pr) {
       const chips = [];
-      const undecided = pr.threads.length - (pr.decided_count || 0);
+      const undecided = pr.open_count !== undefined
+        ? pr.open_count
+        : pr.threads.length - (pr.decided_count || 0);
       if (undecided > 0) {
         chips.push({ text: `${undecided} to decide`,
                      tone: 'bg-amber-50 text-amber-800 border-amber-200' });
@@ -1554,6 +1616,43 @@ function app() {
         this.myTriageError = String(e);
       } finally {
         this.replying = null;
+      }
+    },
+
+    async rerunChecks(number) {
+      this.rerunning = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/rerun_checks`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not re-run (${r.status})`;
+        } else {
+          await this.loadMyTriage();
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.rerunning = null;
+      }
+    },
+
+    async markReady(number) {
+      this.readying = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/ready`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not mark it ready (${r.status})`;
+        } else {
+          await this.loadMyTriage();
+          await this.loadMyPrs();
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.readying = null;
       }
     },
 

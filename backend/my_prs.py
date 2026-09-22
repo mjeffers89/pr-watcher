@@ -18,6 +18,7 @@ and folding them into either would tell the user to do the wrong thing.
 """
 import asyncio
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -95,11 +96,36 @@ def _checks_state(rollup):
     if not rollup:
         return "none"
     states = [(c.get("conclusion") or c.get("state") or "").upper() for c in rollup]
-    if any(s in ("FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED") for s in states):
+    # CANCELLED is deliberately not a failure. It almost always means a newer
+    # run superseded this one, and `gh pr checks` ignores them too — counting
+    # them marked a PR whose checks had all passed as "build failing".
+    if any(s in ("FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED") for s in states):
         return "red"
     if any(s in ("PENDING", "IN_PROGRESS", "QUEUED", "EXPECTED", "") for s in states):
         return "pending"
     return "green"
+
+
+def _failing_checks(rollup):
+    """The checks actually standing in the way, with a link and their run id.
+
+    The run id is what `gh run rerun` needs, and it is only available by
+    parsing the job URL — the rollup does not carry it directly.
+    """
+    out = []
+    for c in rollup or []:
+        state = (c.get("conclusion") or c.get("state") or "").upper()
+        if state not in ("FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED"):
+            continue
+        link = c.get("detailsUrl") or c.get("targetUrl") or ""
+        m = re.search(r"/actions/runs/(\d+)", link)
+        out.append({
+            "name": c.get("name") or c.get("context") or "unnamed check",
+            "state": state,
+            "link": link,
+            "run_id": m.group(1) if m else None,
+        })
+    return out
 
 
 def _threads(number, self_login):
@@ -182,10 +208,27 @@ def _threads(number, self_login):
     }
 
 
+def _open_threads(threads):
+    """Threads still needing a decision from the author.
+
+    A thread stays outstanding on GitHub until somebody replies there, but the
+    author may have already dealt with it here — skipped it, answered it, or
+    handed the work to Claude. Counting those as still waiting left a PR
+    reporting comments to decide with an empty list underneath and no way to
+    move it on.
+    """
+    out = []
+    for t in threads:
+        a = t.get("analysis")
+        if a is None or a.get("status") in ("pending", "handed_off"):
+            out.append(t)
+    return out
+
+
 def _categorise(pr, checks, threads, engaged):
     if pr["is_draft"] or checks == "red":
         return "not_ready"
-    if threads:
+    if _open_threads(threads):
         return "comments"
     if pr["review_decision"] == "APPROVED" and checks in ("green", "none"):
         return "ready"
@@ -248,6 +291,8 @@ def gather(self_login):
             "size": (d.get("additions") or 0) + (d.get("deletions") or 0),
             "threads": threads,
             "category": _categorise(p, checks, threads, info["engaged"]),
+            "open_count": len(_open_threads(threads)),
+            "failing_checks": _failing_checks(d.get("statusCheckRollup")),
             "waiting_since": info["last_self_comment_at"],
             "review_request": requests.get(p["number"]),
             "bundle": bundles.get(p["number"]),
@@ -1114,4 +1159,41 @@ def assemble_summary(number):
             lines.append(f"- {t['author']} on {where}")
         lines.append("")
     return "\n".join(lines)
+
+def rerun_failed_checks(number):
+    """Re-run the failed jobs on this PR's most recent workflow runs."""
+    detail = _gh_json([
+        "gh", "pr", "list", "--repo", config.repo(), "--state", "open",
+        "--limit", "50", "--json", "number,statusCheckRollup",
+    ])
+    rollup = next(
+        (p.get("statusCheckRollup") for p in detail if p["number"] == number), None
+    )
+    runs = {c["run_id"] for c in _failing_checks(rollup) if c["run_id"]}
+    if not runs:
+        return {"ok": False, "error": "no failed workflow run to re-run"}
+    failures = []
+    for run_id in sorted(runs):
+        r = subprocess.run(
+            ["gh", "run", "rerun", run_id, "--failed", "--repo", config.repo()],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            failures.append(f"{run_id}: {(r.stderr or r.stdout or '').strip()[:200]}")
+    if failures:
+        return {"ok": False, "error": "; ".join(failures)}
+    db.log_action(number, "checks_rerun", f"{len(runs)} run(s)")
+    return {"ok": True, "runs": len(runs)}
+
+
+def mark_ready_for_review(number):
+    """Take one of the user's own PRs out of draft."""
+    r = subprocess.run(
+        ["gh", "pr", "ready", str(number), "--repo", config.repo()],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return {"ok": False, "error": (r.stderr or r.stdout or "").strip()[:300]}
+    db.log_action(number, "marked_ready", "")
+    return {"ok": True}
 
