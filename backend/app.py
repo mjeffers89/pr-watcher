@@ -140,7 +140,16 @@ def _get_state():
 # ---------- Routes: UI -----------------------------------------------------
 @app.get("/")
 def root():
-    return FileResponse(FRONTEND / "index.html")
+    # The whole UI is this one file, and it changes whenever the app does.
+    # Without an explicit directive browsers apply heuristic caching and can
+    # serve a stale copy for hours — the page then shows fresh API data inside
+    # an old layout, which looks like the change simply did not happen.
+    # `no-cache` still allows a conditional request, so an unchanged file costs
+    # a 304 rather than a full download.
+    return FileResponse(
+        FRONTEND / "index.html",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 # ---------- Routes: state --------------------------------------------------
