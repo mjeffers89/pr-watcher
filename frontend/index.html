@@ -476,7 +476,8 @@
 
         <div class="space-y-3">
           <template x-for="pr in inBucket(bucket.key)" :key="pr.number">
-            <div class="bg-white border rounded-xl" :class="bucket.ring">
+            <div class="bg-white border rounded-xl" :class="bucket.ring"
+                 :id="'mypr-' + pr.number">
 
               <!-- Header: what this PR is and what it needs, on two lines -->
               <div class="p-4">
@@ -922,7 +923,7 @@
   </section>
 </main>
 
-  <!-- My open PRs (follow-up sidebar) -->
+  <!-- My open PRs: an index into the My PRs tab, grouped the same way -->
   <aside class="w-80 shrink-0">
     <div class="flex items-baseline justify-between mb-2">
       <h2 class="text-sm font-semibold uppercase text-slate-500">
@@ -931,40 +932,52 @@
       </h2>
       <div class="text-xs text-slate-400" x-show="myPrsError" x-text="'gh error'" :title="myPrsError"></div>
     </div>
-    <div class="space-y-2">
-      <template x-for="p in myPrs" :key="p.number">
-        <a :href="p.url" target="_blank" rel="noopener noreferrer"
-           class="block bg-white border rounded-lg p-3 hover:bg-slate-50">
-          <div class="text-sm font-medium leading-snug">
-            #<span x-text="p.number"></span> · <span x-text="p.title"></span>
+
+    <div class="space-y-4">
+      <template x-for="g in sidebarGroups()" :key="g.key">
+        <div>
+          <div class="text-xs font-semibold uppercase tracking-wide mb-1.5" :class="g.tone"
+               x-text="g.label + ' (' + g.items.length + ')'"></div>
+          <div class="space-y-1.5">
+            <template x-for="p in g.items" :key="p.number">
+              <div class="bg-white border rounded-lg px-3 py-2 hover:bg-slate-50">
+                <div class="flex items-start gap-2">
+                  <button @click="jumpToPr(p.number)"
+                          class="flex-1 min-w-0 text-left">
+                    <div class="text-sm leading-snug text-slate-900">
+                      <span class="text-slate-400" x-text="'#' + p.number"></span>
+                      <span x-text="shortTitle(p.title)"></span>
+                    </div>
+                    <div class="text-xs mt-0.5" :class="g.factTone"
+                         x-text="sidebarFact(p)"></div>
+                  </button>
+                  <a :href="p.url" target="_blank" rel="noopener noreferrer"
+                     class="shrink-0 text-xs text-slate-300 hover:text-slate-600"
+                     title="Open on GitHub">↗</a>
+                </div>
+                <div x-show="p.review_decision === 'APPROVED' && !p.is_draft" class="mt-2">
+                  <button @click.prevent.stop="mergePr(p.number)" :disabled="p.merging"
+                          class="px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                          title="Squash merge and delete the branch, or run your configured merge skill.">
+                    <span x-show="!p.merging">Merge</span>
+                    <span x-show="p.merging">Merging…</span>
+                  </button>
+                </div>
+                <div x-show="p.merge_error"
+                     class="mt-1 text-xs text-red-700 whitespace-pre-wrap break-words"
+                     x-text="p.merge_error"></div>
+              </div>
+            </template>
           </div>
-          <div class="mt-2 flex items-center gap-2 flex-wrap">
-            <span class="text-xs font-semibold px-1.5 py-0.5 rounded"
-                  :class="reviewBadgeClass(p)"
-                  x-text="reviewBadgeLabel(p)"></span>
-            <span x-show="p.approvals > 0" class="text-xs text-emerald-700"
-                  x-text="'👍 ' + p.approvals"></span>
-            <span x-show="p.changes_requested > 0" class="text-xs text-red-700"
-                  x-text="'✋ ' + p.changes_requested"></span>
-            <span x-show="p.is_draft" class="text-xs text-slate-400 italic">draft</span>
-          </div>
-          <div class="mt-2 flex items-center gap-2" x-show="p.review_decision === 'APPROVED'">
-            <button @click.prevent.stop="mergePr(p.number)"
-                    :disabled="p.merging"
-                    class="px-2 py-1 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-                    :class="p.merging ? 'cursor-wait' : ''"
-                    title="Merge this PR (squash + delete branch, or your configured merge skill). Pre-flight blockers still stop the merge.">
-              <span x-show="!p.merging">Merge</span>
-              <span x-show="p.merging">Merging…</span>
-            </button>
-          </div>
-          <div x-show="p.merge_error"
-               class="mt-1 text-xs text-red-700 whitespace-pre-wrap break-words"
-               x-text="p.merge_error"></div>
-        </a>
+        </div>
       </template>
+
       <div x-show="myPrs.length === 0 && !myPrsError" class="text-slate-400 italic text-sm">
         No open PRs.
+      </div>
+      <div x-show="myPrs.length > 0 && myTriage.length === 0"
+           class="text-xs text-slate-400 pt-1">
+        Open My PRs to sort these by what each one needs.
       </div>
     </div>
   </aside>
@@ -1044,6 +1057,76 @@ function app() {
     ],
 
     inBucket(key) { return this.myTriage.filter(p => p.category === key); },
+
+    // The sidebar is an index into the My PRs tab, so it groups the same way
+    // once that data exists. Until then it falls back to what the cheap
+    // endpoint can actually tell us, rather than inventing a grouping that
+    // would reshuffle the moment the real one loads.
+    sidebarGroups() {
+      if (this.myTriage.length) {
+        return this.BUCKETS
+          .map(b => ({
+            key: b.key, label: b.label, tone: b.tone,
+            factTone: b.key === 'comments' ? 'text-amber-700'
+                    : b.key === 'ready' ? 'text-emerald-700'
+                    : 'text-slate-500',
+            items: this.myTriage.filter(p => p.category === b.key),
+          }))
+          .filter(g => g.items.length);
+      }
+      const groups = [
+        { key: 'approved', label: 'Ready to merge', tone: 'text-emerald-700',
+          factTone: 'text-emerald-700',
+          items: this.myPrs.filter(p => p.review_decision === 'APPROVED' && !p.is_draft) },
+        { key: 'open', label: 'Out for review', tone: 'text-blue-700',
+          factTone: 'text-slate-500',
+          items: this.myPrs.filter(p => p.review_decision !== 'APPROVED' && !p.is_draft) },
+        { key: 'draft', label: 'Drafts', tone: 'text-slate-500',
+          factTone: 'text-slate-500',
+          items: this.myPrs.filter(p => p.is_draft) },
+      ];
+      return groups.filter(g => g.items.length);
+    },
+
+    // One fact per row — the thing that decides whether to click it.
+    sidebarFact(p) {
+      if (p.category === 'comments') {
+        const n = p.threads.length - (p.decided_count || 0);
+        return n === 1 ? '1 comment to decide' : `${n} comments to decide`;
+      }
+      if (p.category === 'waiting') {
+        const d = this.daysSince(p.waiting_since);
+        return d === null ? 'with the reviewer'
+             : d === 0 ? 'answered today'
+             : d === 1 ? 'waiting 1 day'
+             : `waiting ${d} days`;
+      }
+      if (p.category === 'ready') return 'approved, ready to merge';
+      if (p.category === 'push') return 'nobody assigned yet';
+      if (p.category === 'not_ready') {
+        if (p.is_draft && p.checks === 'red') return 'draft, build failing';
+        return p.is_draft ? 'still a draft' : 'build failing';
+      }
+      if (p.is_draft) return 'draft';
+      if (p.review_decision === 'APPROVED') return 'approved';
+      if (p.changes_requested > 0) return 'changes requested';
+      return 'review required';
+    },
+
+    // Titles here are [LA-xxxxx] prefixed and wrap to three lines otherwise.
+    shortTitle(title) {
+      const t = (title || '').replace(/^\[[A-Z]+-\d+\]\s*/, '');
+      return t.length > 58 ? t.slice(0, 55) + '…' : t;
+    },
+
+    jumpToPr(number) {
+      this.tab = 'mine';
+      if (!this.myTriage.length && !this.myTriageLoading) this.loadMyTriage();
+      this.$nextTick(() => {
+        const el = document.getElementById('mypr-' + number);
+        if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+    },
 
     daysSince(ts) {
       if (!ts) return null;
