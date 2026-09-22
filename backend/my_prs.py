@@ -164,16 +164,36 @@ def _threads(number, self_login):
         })
 
     out.sort(key=lambda t: t["created_at"])
-    return out
+
+    # Whether anyone has actually engaged with this PR, and when the author
+    # last spoke. This is what separates "nobody has looked at it" from "they
+    # looked, I answered, and now I am waiting" — two situations that need
+    # opposite actions but look identical from the outstanding-thread count.
+    others = [
+        c for c in inline + issues
+        if c["user"]["login"] != self_login
+        and not _is_noise(c["user"]["login"], c.get("body"))
+    ]
+    mine = [c for c in inline + issues if c["user"]["login"] == self_login]
+    return {
+        "threads": out,
+        "engaged": bool(others),
+        "last_self_comment_at": max((c["created_at"] for c in mine), default=None),
+    }
 
 
-def _categorise(pr, checks, threads):
+def _categorise(pr, checks, threads, engaged):
     if pr["is_draft"] or checks == "red":
         return "not_ready"
     if threads:
         return "comments"
     if pr["review_decision"] == "APPROVED" and checks in ("green", "none"):
         return "ready"
+    # Nothing outstanding and somebody has already been through it: the ball is
+    # with them, not the author. Calling this "push for a review" would tell the
+    # author to chase a reviewer who is mid-review.
+    if engaged:
+        return "waiting"
     return "push"
 
 
@@ -212,10 +232,11 @@ def gather(self_login):
         d = detail.get(p["number"], {})
         checks = _checks_state(d.get("statusCheckRollup"))
         try:
-            threads = _threads(p["number"], self_login)
+            info = _threads(p["number"], self_login)
         except Exception as e:  # noqa: BLE001 - one bad PR must not blank the tab
-            threads = []
+            info = {"threads": [], "engaged": False, "last_self_comment_at": None}
             p["threads_error"] = str(e)
+        threads = info["threads"]
         for t in threads:
             rec = saved.get((p["number"], str(t["root_id"])))
             t["analysis"] = dict(rec) if rec else None
@@ -226,7 +247,8 @@ def gather(self_login):
             "updated_at": d.get("updatedAt"),
             "size": (d.get("additions") or 0) + (d.get("deletions") or 0),
             "threads": threads,
-            "category": _categorise(p, checks, threads),
+            "category": _categorise(p, checks, threads, info["engaged"]),
+            "waiting_since": info["last_self_comment_at"],
             "review_request": requests.get(p["number"]),
             "bundle": bundles.get(p["number"]),
             "decided_count": sum(

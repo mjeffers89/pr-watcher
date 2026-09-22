@@ -504,7 +504,7 @@
                       <span x-show="triaging !== pr.number">Work out what to do</span>
                       <span x-show="triaging === pr.number">Reading…</span>
                     </button>
-                    <button x-show="bucket.key === 'push' && !pr.review_request"
+                    <button x-show="(bucket.key === 'push' || (bucket.key === 'waiting' && daysSince(pr.waiting_since) >= 3)) && !pr.review_request"
                             @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
                             class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
                       <span x-text="drafting === pr.number ? 'Writing…' : 'Draft a review request'"></span>
@@ -1032,8 +1032,11 @@ function app() {
       { key: 'comments', label: 'Review comments',
         blurb: 'Someone is waiting on a reply from you.',
         tone: 'text-amber-700', ring: 'border-amber-200' },
+      { key: 'waiting', label: 'Waiting on them',
+        blurb: 'You have answered everything. It is with the reviewer now.',
+        tone: 'text-slate-600', ring: 'border-slate-200' },
       { key: 'push', label: 'Push for a review',
-        blurb: 'Healthy, but nobody is looking at it yet.',
+        blurb: 'Nobody has looked at it yet.',
         tone: 'text-blue-700', ring: 'border-blue-200' },
       { key: 'not_ready', label: 'Not ready yet',
         blurb: 'Still a draft, or the build is failing.',
@@ -1041,6 +1044,13 @@ function app() {
     ],
 
     inBucket(key) { return this.myTriage.filter(p => p.category === key); },
+
+    daysSince(ts) {
+      if (!ts) return null;
+      const t = Date.parse(ts);
+      if (isNaN(t)) return null;
+      return Math.floor((Date.now() - t) / 86400000);
+    },
 
     // Only one comment and one action open at a time. With fifteen comments on
     // a PR, everything expanded is the thing that made this unreadable.
@@ -1074,6 +1084,18 @@ function app() {
       } else if (pr.checks === 'green') {
         chips.push({ text: 'build passing',
                      tone: 'bg-slate-100 text-slate-600 border-slate-200' });
+      }
+      if (pr.category === 'waiting') {
+        const days = this.daysSince(pr.waiting_since);
+        chips.push({
+          text: days === null ? 'waiting on them'
+              : days === 0 ? 'answered today'
+              : days === 1 ? 'waiting 1 day'
+              : `waiting ${days} days`,
+          tone: days !== null && days >= 3
+            ? 'bg-amber-50 text-amber-800 border-amber-200'
+            : 'bg-slate-100 text-slate-600 border-slate-200',
+        });
       }
       if (pr.review_decision === 'APPROVED') {
         chips.push({ text: 'approved',
