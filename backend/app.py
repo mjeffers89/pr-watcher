@@ -218,13 +218,31 @@ class HandoverIn(BaseModel):
     message: str
 
 
+@app.get("/api/my_prs/{number}/handover")
+def get_handover(number: int):
+    """Just this PR's handover row — cheap enough to poll while one is running."""
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT * FROM handovers WHERE pr_number=?", (number,)
+        ).fetchone()
+    return {"handover": dict(row) if row else None}
+
+
 @app.post("/api/my_prs/{number}/handover")
 async def build_handover(number: int):
-    """Write the runbook, the ask and the ticket change for a risky PR."""
-    result = await my_prs.handover(number)
-    if not result["ok"]:
-        raise HTTPException(400, result["error"])
-    return result
+    """Start writing the handover and return at once.
+
+    Reading a diff and working out the run order takes minutes. Holding the
+    request open meant a disabled button and no other sign of life, and a
+    reload lost the work entirely. The state lives in the row instead, so the
+    page can be closed and come back to it.
+    """
+    started = my_prs.start_handover(number)
+    if not started["ok"]:
+        raise HTTPException(409, started["error"])
+    import asyncio
+    asyncio.create_task(my_prs.handover(number))
+    return {"ok": True, "status": "running"}
 
 
 @app.post("/api/my_prs/{number}/handover/send")

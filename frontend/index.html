@@ -516,14 +516,22 @@
                       <div x-show="risk.level === 'major' && risk.label === 'Do not run this yourself'"
                            class="mt-3">
                         <button @click="buildHandover(pr.number)"
-                                :disabled="handingOver === pr.number"
+                                :disabled="pr.handover && pr.handover.status === 'running'"
                                 class="px-3 py-1.5 text-xs rounded-md bg-red-700 text-white hover:bg-red-800 disabled:opacity-60">
-                          <span x-text="handingOver === pr.number
-                            ? 'Working out the order…'
-                            : (pr.handover ? 'Redo the handover' : 'Hand it over')"></span>
+                          <span x-text="(pr.handover && pr.handover.status === 'running')
+                            ? 'Working on it…'
+                            : ((pr.handover && pr.handover.runbook) ? 'Redo the handover' : 'Hand it over')"></span>
                         </button>
-                        <span class="text-xs text-red-700 ml-2">
+                        <span x-show="!(pr.handover && pr.handover.status === 'running')"
+                              class="text-xs text-red-700 ml-2">
                           Writes the runbook, the ask, and what to change on the ticket.
+                        </span>
+                        <span x-show="pr.handover && pr.handover.status === 'running'"
+                              class="text-xs text-red-700 ml-2">
+                          Reading the migrations and working out the run order —
+                          takes several minutes.
+                          <span x-text="handoverWaited(pr.handover)"></span>.
+                          You can close this and come back.
                         </span>
                       </div>
                     </div>
@@ -1454,6 +1462,9 @@ function app() {
         const data = await r.json();
         this.myTriage = data.prs || [];
         if (data.error) this.myTriageError = data.error;
+        this.myTriage
+          .filter(p => p.handover && p.handover.status === 'running')
+          .forEach(p => this.pollHandover(p.number));
       } catch (e) {
         this.myTriageError = String(e);
       } finally {
@@ -1815,29 +1826,48 @@ function app() {
     },
 
     async buildHandover(number) {
-      this.handingOver = number;
       this.myTriageError = '';
+      const pr = this.myTriage.find(p => p.number === number);
       try {
         const r = await fetch(`/api/my_prs/${number}/handover`, { method: 'POST' });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
-          this.myTriageError = e.detail || `Could not write it (${r.status})`;
-        } else {
-          const data = await r.json();
-          const pr = this.myTriage.find(p => p.number === number);
-          if (pr) {
-            pr.handover = {
-              runbook: data.runbook, message: data.message,
-              ticket_key: data.ticket_key, ticket_note: data.ticket_note,
-              status: 'draft',
-            };
-          }
+          this.myTriageError = e.detail || `Could not start it (${r.status})`;
+          return;
         }
+        if (pr) pr.handover = { status: 'running', started_at: new Date().toISOString() };
+        this.pollHandover(number);
       } catch (e) {
         this.myTriageError = String(e);
-      } finally {
-        this.handingOver = null;
       }
+    },
+
+    // The work outlives the page, so this only watches; closing the tab and
+    // coming back picks the result up from the row.
+    async pollHandover(number) {
+      const pr = this.myTriage.find(p => p.number === number);
+      if (!pr) return;
+      for (let i = 0; i < 90; i++) {
+        await new Promise(r => setTimeout(r, 8000));
+        let h;
+        try {
+          h = (await (await fetch(`/api/my_prs/${number}/handover`)).json()).handover;
+        } catch (e) { continue; }
+        if (!h) continue;
+        pr.handover = h;
+        if (h.status !== 'running') {
+          if (h.status === 'failed') this.myTriageError = h.error || 'Handover failed';
+          return;
+        }
+      }
+    },
+
+    handoverWaited(h) {
+      if (!h || !h.started_at) return '';
+      const t = Date.parse(h.started_at.replace(' ', 'T') + (h.started_at.endsWith('Z') ? '' : 'Z'));
+      if (isNaN(t)) return '';
+      const mins = Math.floor((Date.now() - t) / 60000);
+      return mins < 1 ? 'just started' : mins === 1 ? '1 minute so far' : `${mins} minutes so far`;
     },
 
     async sendHandover(number, h) {

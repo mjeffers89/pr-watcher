@@ -24,6 +24,8 @@ _MIGRATIONS = [
     "ALTER TABLE my_pr_actions ADD COLUMN wants TEXT",
     "ALTER TABLE my_pr_actions ADD COLUMN their_case TEXT",
     "ALTER TABLE my_pr_actions ADD COLUMN unknowns TEXT",
+    "ALTER TABLE handovers ADD COLUMN error TEXT",
+    "ALTER TABLE handovers ADD COLUMN started_at TEXT",
     # Carry conversations started before chats were addressed by scope over to
     # the scoped tables, so nobody loses a thread they were mid-way through.
     # Both are idempotent: `scope` is the primary key on chat_sessions, and the

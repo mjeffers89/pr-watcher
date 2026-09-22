@@ -158,7 +158,9 @@ CREATE TABLE IF NOT EXISTS handovers (
   message TEXT,
   ticket_key TEXT,
   ticket_note TEXT,
-  status TEXT NOT NULL DEFAULT 'draft', -- draft | sent
+  status TEXT NOT NULL DEFAULT 'draft', -- running | draft | failed | sent
+  error TEXT,
+  started_at TEXT,
   sent_at TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );

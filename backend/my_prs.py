@@ -1357,14 +1357,48 @@ def ticket_key_from(title):
     return m.group(1) if m else None
 
 
+def start_handover(number):
+    """Mark a handover as running so the UI has something to show immediately.
+
+    Writing the runbook takes minutes of model time. Holding the request open
+    for that long gave a disabled button and nothing else, and a reload threw
+    the work away — indistinguishable from a button that does nothing.
+    """
+    with db.conn() as c:
+        row = c.execute(
+            "SELECT status FROM handovers WHERE pr_number=?", (number,)
+        ).fetchone()
+        if row and row["status"] == "running":
+            return {"ok": False, "error": "already working on this one"}
+        c.execute(
+            """INSERT INTO handovers (pr_number, status, started_at)
+               VALUES (?, 'running', datetime('now'))
+               ON CONFLICT(pr_number) DO UPDATE SET
+                 status='running', started_at=datetime('now'), error=NULL""",
+            (number,),
+        )
+    return {"ok": True}
+
+
+def _fail_handover(number, error):
+    with db.conn() as c:
+        c.execute(
+            "UPDATE handovers SET status='failed', error=? WHERE pr_number=?",
+            (error[:500], number),
+        )
+    db.log_action(number, "handover_failed", error[:300])
+
+
 async def handover(number):
     """Write the runbook, the ask, and the ticket change for a risky PR."""
     prs = {p["number"]: p for p in gather(config.self_login())}
     pr = prs.get(number)
     if pr is None:
+        _fail_handover(number, "not one of your open PRs")
         return {"ok": False, "error": "not one of your open PRs"}
     risks = pr.get("risks") or []
     if not risks:
+        _fail_handover(number, "nothing on this PR needs handing over")
         return {"ok": False, "error": "nothing on this PR needs handing over"}
 
     risk_text = "\n\n".join(
@@ -1389,14 +1423,18 @@ async def handover(number):
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
+            _fail_handover(number, "timed out writing the handover")
             return {"ok": False, "error": "timed out writing the handover"}
 
     if proc.returncode != 0:
-        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
+        reason = claude_error(stdout, stderr, proc.returncode)
+        _fail_handover(number, reason)
+        return {"ok": False, "error": reason}
 
     out = stdout.decode(errors="replace")
     runbook = _block(out, "RUNBOOK")
     if not runbook:
+        _fail_handover(number, "no <RUNBOOK> block in output")
         return {"ok": False, "error": "no <RUNBOOK> block in output"}
     message = _block(out, "MESSAGE")
     ticket_note = _block(out, "TICKET")
@@ -1413,6 +1451,7 @@ async def handover(number):
                  status='draft', sent_at=NULL, created_at=datetime('now')""",
             (number, runbook, message, key, ticket_note),
         )
+        c.execute("UPDATE handovers SET error=NULL WHERE pr_number=?", (number,))
     db.log_action(number, "handover_drafted", key or "")
     return {
         "ok": True, "runbook": runbook, "message": message,
