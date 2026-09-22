@@ -172,6 +172,7 @@ def meta():
         # Whether the Teams send button can work, and what it should say.
         "teams_configured": bool(config.teams_webhook_url()),
         "teams_channel_label": config.teams_channel_label(),
+        "jira_base_url": config.jira_base_url(),
     }
 
 
@@ -211,6 +212,31 @@ def my_prs_triage_view():
         p["merging"] = p["number"] in merger.MERGING
         p["merge_error"] = merger.MERGE_ERRORS.get(p["number"])
     return {"prs": prs}
+
+
+class HandoverIn(BaseModel):
+    message: str
+
+
+@app.post("/api/my_prs/{number}/handover")
+async def build_handover(number: int):
+    """Write the runbook, the ask and the ticket change for a risky PR."""
+    result = await my_prs.handover(number)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/my_prs/{number}/handover/send")
+async def send_handover(number: int, payload: HandoverIn):
+    msg = (payload.message or "").strip()
+    if not msg:
+        raise HTTPException(400, "nothing to send")
+    result = my_prs.send_handover(number, msg)
+    if not result["ok"]:
+        raise HTTPException(500, result["error"])
+    watchers.notify(f"Handed over #{number}")
+    return {"ok": True}
 
 
 @app.post("/api/my_prs/{number}/rerun_checks")

@@ -149,6 +149,20 @@ CREATE TABLE IF NOT EXISTS pr_bundles (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Everything needed to put a risky PR in someone else's hands: the runbook
+-- they will follow, the message that asks them, and what to change on the
+-- ticket so ownership actually moves rather than being implied in a chat.
+CREATE TABLE IF NOT EXISTS handovers (
+  pr_number INTEGER PRIMARY KEY,
+  runbook TEXT,
+  message TEXT,
+  ticket_key TEXT,
+  ticket_note TEXT,
+  status TEXT NOT NULL DEFAULT 'draft', -- draft | sent
+  sent_at TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,

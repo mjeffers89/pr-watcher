@@ -141,6 +141,15 @@ def teams_channel_label() -> str:
     return _get("teams_channel_label", "PRW_TEAMS_CHANNEL_LABEL", "Teams")
 
 
+def jira_base_url() -> str | None:
+    """Base URL for ticket links, e.g. https://acme.atlassian.net/browse.
+
+    Unset means the UI shows the ticket key without linking it, rather than
+    linking somewhere that might not exist.
+    """
+    return _get("jira_base_url", "PRW_JIRA_BASE_URL")
+
+
 def port() -> int:
     return int(_get("port", "PRW_PORT", "4747"))
 

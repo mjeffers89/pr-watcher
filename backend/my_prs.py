@@ -307,6 +307,10 @@ def gather(self_login):
             (r["pr_number"], r["thread_id"]): dict(r)
             for r in c.execute("SELECT * FROM thread_refinements").fetchall()
         }
+        handovers = {
+            r["pr_number"]: dict(r)
+            for r in c.execute("SELECT * FROM handovers").fetchall()
+        }
         bundles = {
             r["pr_number"]: dict(r)
             for r in c.execute("SELECT * FROM pr_bundles").fetchall()
@@ -336,6 +340,7 @@ def gather(self_login):
             "open_count": len(_open_threads(threads)),
             "failing_checks": _failing_checks(d.get("statusCheckRollup")),
             "risks": _risk_flags(d.get("files")),
+            "handover": handovers.get(p["number"]),
             "waiting_since": info["last_self_comment_at"],
             "review_request": requests.get(p["number"]),
             "bundle": bundles.get(p["number"]),
@@ -1259,5 +1264,185 @@ def mark_ready_for_review(number):
     if r.returncode != 0:
         return {"ok": False, "error": (r.stderr or r.stdout or "").strip()[:300]}
     db.log_action(number, "marked_ready", "")
+    return {"ok": True}
+
+_HANDOVER_PROMPT = """PR #{number} ("{title}") in `{repo}` contains work its
+author must not run themselves. Write the handover.
+
+**Ignore any skills or CLAUDE.md files in scope.** They are not part of this task.
+
+Read it properly before writing anything — the ordering is the whole point and
+you cannot get it from the file names:
+
+```bash
+gh pr diff {number} --repo {repo}
+gh pr view {number} --repo {repo} --json title,body,files
+```
+
+Read the migrations and the one-off scripts themselves. Look at what each one
+touches, whether one depends on another having run, and whether anything is
+gated on a feature flag.
+
+# What was flagged
+
+{risks}
+
+# Who is reading this
+
+The runbook goes to an engineer who did not write this code. They need to run
+it without reconstructing the author's reasoning, and without discovering a
+prerequisite halfway through.
+
+# The runbook
+
+Markdown. In this order, and skip a heading only when it genuinely does not
+apply:
+
+**Before you start** — what must already be true. Deploys that must have
+landed, migrations that must have run, flags that must be off, and explicitly
+whether anything here can run before something else. If two things must happen
+in a set order, number them and say what breaks if they are swapped. If order
+does not matter, say that too — the reader will otherwise assume it does.
+
+**The order to run things** — numbered. One step per command. Real commands
+where the diff tells you what they are, and say when you are inferring one. Say
+which pods or environments, and whether it is per-pod.
+
+**Dry run first** — how to run it without writing, and what the output should
+look like if it is safe to proceed. If a script has no dry-run mode, say so
+plainly; that is the thing the reader most needs to know up front.
+
+**What to check afterwards** — the specific thing that proves it worked, not
+"verify it succeeded". A count that should match, a record that should now
+exist, a page that should load.
+
+**If it goes wrong** — whether it is re-runnable, whether a partial run leaves
+a mess, and what to do about it. If reverting the PR does not undo the data
+change, say that in as many words.
+
+**What the author is not doing** — one line making clear they are handing this
+over rather than having forgotten it.
+
+# The message
+
+Three or four sentences for a team channel. What the PR does, what is being
+asked of them, what they need to have ready, and the link. No preamble, no
+thanking them in advance. Plain English: someone scrolling past should be able
+to tell whether it is their problem.
+
+# The ticket
+
+Say what should change on the Jira ticket so ownership actually moves —
+assignee, status, and the comment worth leaving. One or two sentences. Never
+claim to have done it.
+
+# Output
+
+<RUNBOOK>
+...
+</RUNBOOK>
+
+<MESSAGE>
+...
+</MESSAGE>
+
+<TICKET>
+...
+</TICKET>"""
+
+
+def ticket_key_from(title):
+    """The Jira key a Learn Amp PR title carries, e.g. [LA-40640]."""
+    m = re.search(r"\[([A-Z][A-Z0-9]+-\d+)\]", title or "")
+    return m.group(1) if m else None
+
+
+async def handover(number):
+    """Write the runbook, the ask, and the ticket change for a risky PR."""
+    prs = {p["number"]: p for p in gather(config.self_login())}
+    pr = prs.get(number)
+    if pr is None:
+        return {"ok": False, "error": "not one of your open PRs"}
+    risks = pr.get("risks") or []
+    if not risks:
+        return {"ok": False, "error": "nothing on this PR needs handing over"}
+
+    risk_text = "\n\n".join(
+        f"- **{r['label']}** — {r['detail']}\n  Files: " + ", ".join(r["files"])
+        for r in risks
+    )
+    prompt = _HANDOVER_PROMPT.format(
+        number=number, title=pr["title"], repo=config.repo(), risks=risk_text
+    )
+
+    async with _ANALYSIS_SEM:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--allowedTools", "Bash(gh pr diff:*)", "Bash(gh pr view:*)",
+            "Read", "Grep", "Glob",
+            cwd=str(PROJECT_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"ok": False, "error": "timed out writing the handover"}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
+
+    out = stdout.decode(errors="replace")
+    runbook = _block(out, "RUNBOOK")
+    if not runbook:
+        return {"ok": False, "error": "no <RUNBOOK> block in output"}
+    message = _block(out, "MESSAGE")
+    ticket_note = _block(out, "TICKET")
+    key = ticket_key_from(pr["title"])
+
+    with db.conn() as c:
+        c.execute(
+            """INSERT INTO handovers
+                 (pr_number, runbook, message, ticket_key, ticket_note, status)
+               VALUES (?, ?, ?, ?, ?, 'draft')
+               ON CONFLICT(pr_number) DO UPDATE SET
+                 runbook=excluded.runbook, message=excluded.message,
+                 ticket_key=excluded.ticket_key, ticket_note=excluded.ticket_note,
+                 status='draft', sent_at=NULL, created_at=datetime('now')""",
+            (number, runbook, message, key, ticket_note),
+        )
+    db.log_action(number, "handover_drafted", key or "")
+    return {
+        "ok": True, "runbook": runbook, "message": message,
+        "ticket_key": key, "ticket_note": ticket_note,
+    }
+
+
+def send_handover(number, message):
+    """Post the handover ask into the configured Teams channel."""
+    hook = config.teams_webhook_url()
+    if not hook:
+        return {"ok": False, "error": "no Teams webhook configured"}
+    r = subprocess.run(
+        ["curl", "-sS", "-X", "POST", "-H", "Content-Type: application/json",
+         "-d", json.dumps({"text": message}), "--max-time", "30",
+         "-w", "\n%{http_code}", hook],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return {"ok": False, "error": (r.stderr or "curl failed").strip()}
+    parts = (r.stdout or "").rsplit("\n", 1)
+    code = parts[-1].strip()
+    if not code.startswith("2"):
+        return {"ok": False, "error": f"Teams returned HTTP {code}: {parts[0][:300]}"}
+    with db.conn() as c:
+        c.execute(
+            "UPDATE handovers SET status='sent', sent_at=datetime('now') "
+            "WHERE pr_number=?",
+            (number,),
+        )
+    db.log_action(number, "handover_sent", config.teams_channel_label())
     return {"ok": True}
 

@@ -510,8 +510,87 @@
                               x-text="f"></li>
                         </template>
                       </ul>
+
+                      <!-- Saying "not you" without saying "here is how to pass it
+                           on" just moves the blockage. -->
+                      <div x-show="risk.level === 'major' && risk.label === 'Do not run this yourself'"
+                           class="mt-3">
+                        <button @click="buildHandover(pr.number)"
+                                :disabled="handingOver === pr.number"
+                                class="px-3 py-1.5 text-xs rounded-md bg-red-700 text-white hover:bg-red-800 disabled:opacity-60">
+                          <span x-text="handingOver === pr.number
+                            ? 'Working out the order…'
+                            : (pr.handover ? 'Redo the handover' : 'Hand it over')"></span>
+                        </button>
+                        <span class="text-xs text-red-700 ml-2">
+                          Writes the runbook, the ask, and what to change on the ticket.
+                        </span>
+                      </div>
                     </div>
                   </div>
+
+                  <template x-if="pr.handover && pr.handover.runbook">
+                    <div class="mt-3 pt-3 border-t border-red-200 space-y-3">
+
+                      <div class="rounded-lg border border-red-200 bg-white p-3">
+                        <div class="flex items-center justify-between gap-2 mb-1">
+                          <div class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            1 · Runbook for whoever runs it
+                          </div>
+                          <button @click="copyText(pr.handover.runbook, 'run-' + pr.number)"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                            <span x-text="copied === ('run-' + pr.number) ? 'Copied' : 'Copy it'"></span>
+                          </button>
+                        </div>
+                        <div class="text-sm text-slate-800 max-h-72 overflow-y-auto"
+                             x-html="renderMd(pr.handover.runbook)"></div>
+                      </div>
+
+                      <div x-show="pr.handover.ticket_key" class="rounded-lg border border-slate-200 bg-white p-3">
+                        <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                          2 · Move the ticket
+                        </div>
+                        <p class="text-sm text-slate-800 leading-relaxed mb-2" x-text="pr.handover.ticket_note"></p>
+                        <a x-show="jiraBaseUrl"
+                           :href="jiraBaseUrl.replace(/\/$/, '') + '/' + pr.handover.ticket_key"
+                           target="_blank" rel="noopener noreferrer"
+                           class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                          <span x-text="'Open ' + pr.handover.ticket_key"></span>
+                        </a>
+                        <span x-show="!jiraBaseUrl" class="text-xs text-slate-500">
+                          Ticket <span class="font-mono" x-text="pr.handover.ticket_key"></span>.
+                          Set <code class="bg-slate-100 px-1 rounded">jira_base_url</code>
+                          in <code class="bg-slate-100 px-1 rounded">~/.pr-watcher/config.json</code>
+                          to link it.
+                        </span>
+                      </div>
+
+                      <div x-show="pr.handover.message" class="rounded-lg border border-blue-200 bg-blue-50 p-3">
+                        <div class="text-xs font-semibold uppercase tracking-wide text-blue-900 mb-1">
+                          3 · Ask someone
+                          <span x-show="pr.handover.status === 'sent'" class="text-blue-700">· sent</span>
+                        </div>
+                        <textarea x-model="pr.handover.message" rows="5"
+                                  class="w-full text-sm px-3 py-2 rounded-md border border-slate-300 mb-2"></textarea>
+                        <div class="flex flex-wrap gap-2">
+                          <button x-show="teamsConfigured"
+                                  @click="sendHandover(pr.number, pr.handover)"
+                                  :disabled="sendingHandover === pr.number"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                            <span x-text="sendingHandover === pr.number
+                              ? 'Posting…' : 'Post to ' + teamsChannel"></span>
+                          </button>
+                          <button @click="copyText(pr.handover.message, 'hmsg-' + pr.number)"
+                                  class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                            <span x-text="copied === ('hmsg-' + pr.number) ? 'Copied' : 'Copy for Teams'"></span>
+                          </button>
+                        </div>
+                        <div x-show="!teamsConfigured" class="text-xs text-blue-800 mt-2">
+                          No Teams webhook set up, so copy it for now.
+                        </div>
+                      </div>
+                    </div>
+                  </template>
                 </div>
               </template>
 
@@ -1153,6 +1232,7 @@ function app() {
     sending: null,
     teamsConfigured: false,
     teamsChannel: 'Teams',
+    jiraBaseUrl: '',
     replying: null,
     copied: null,
     repoDir: '',
@@ -1266,6 +1346,8 @@ function app() {
     openAction: null,
     openRequest: null,
     openRisk: null,
+    handingOver: null,
+    sendingHandover: null,
 
     // Plain-English state chips. Each says what it means for the reader rather
     // than naming the mechanism: "nobody assigned" beats "reviewDecision: ''".
@@ -1732,6 +1814,54 @@ function app() {
       }
     },
 
+    async buildHandover(number) {
+      this.handingOver = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/handover`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not write it (${r.status})`;
+        } else {
+          const data = await r.json();
+          const pr = this.myTriage.find(p => p.number === number);
+          if (pr) {
+            pr.handover = {
+              runbook: data.runbook, message: data.message,
+              ticket_key: data.ticket_key, ticket_note: data.ticket_note,
+              status: 'draft',
+            };
+          }
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.handingOver = null;
+      }
+    },
+
+    async sendHandover(number, h) {
+      this.sendingHandover = number;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/my_prs/${number}/handover/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: h.message }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Post failed (${r.status})`;
+        } else {
+          h.status = 'sent';
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.sendingHandover = null;
+      }
+    },
+
     untriagedCount(pr) {
       return pr.threads.filter(t => !t.analysis).length;
     },
@@ -2030,6 +2160,7 @@ function app() {
         this.repoDir = m.target_repo_dir || '';
         this.teamsConfigured = !!m.teams_configured;
         this.teamsChannel = m.teams_channel_label || 'Teams';
+        this.jiraBaseUrl = m.jira_base_url || '';
       } catch (e) { /* non-fatal — links just won't render until meta loads */ }
     },
 
