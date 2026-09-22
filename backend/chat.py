@@ -136,8 +136,8 @@ async def _run(scope, prompt, session_args):
             raise RuntimeError(f"Claude timed out after {CHAT_TIMEOUT}s")
 
     if proc.returncode != 0:
-        err = (stderr.decode(errors="replace") or "").strip()
-        raise RuntimeError(err or f"claude exited {proc.returncode}")
+        from .my_prs import claude_error
+        raise RuntimeError(claude_error(stdout, stderr, proc.returncode))
 
     try:
         payload = json.loads(stdout.decode(errors="replace"))

@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS my_pr_actions (
   pr_number INTEGER NOT NULL,
   thread_id TEXT NOT NULL,
   action TEXT NOT NULL,         -- code_fix | reply | no_action
+  headline TEXT,                -- <=10 words, so a thread can be scanned shut
+  wants TEXT,                   -- JSON array of 1-3 short bullets
   summary TEXT,
   recommendation TEXT,
   reply_draft TEXT,

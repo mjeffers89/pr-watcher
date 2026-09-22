@@ -52,6 +52,28 @@ ANALYSIS_TIMEOUT = 420
 _ANALYSIS_SEM = asyncio.Semaphore(2)
 
 
+def claude_error(stdout, stderr, returncode):
+    """Explain why a `claude -p` call failed.
+
+    The CLI reports some fatal conditions on stdout rather than stderr — an
+    expired OAuth session is the common one — so reading stderr alone produces
+    an empty error and a UI that says nothing went wrong. Prefer whichever
+    stream actually carries a message, and name the fix when we recognise it.
+    """
+    out = (stdout or b"").decode(errors="replace").strip()
+    err = (stderr or b"").decode(errors="replace").strip()
+    # The CLI warns about stdin on every headless call; it is never the cause.
+    err = "\n".join(
+        l for l in err.splitlines() if "no stdin data received" not in l
+    ).strip()
+    msg = err or out or f"claude exited with code {returncode}"
+    low = msg.lower()
+    if "oauth" in low or "authenticate" in low or "not logged in" in low:
+        return ("Claude is signed out. Run `claude auth login` in a terminal, "
+                f"then try again. ({msg.splitlines()[0][:160]})")
+    return msg[:600]
+
+
 def _gh_json(args):
     r = subprocess.run(args, capture_output=True, text=True)
     if r.returncode != 0:
@@ -247,11 +269,21 @@ For each comment, decide what it actually needs:
 
 Then write, for each:
 
-- `summary` — what the commenter is actually asking, in plain English. No
+- `headline` — at most ten words, naming what this comment is about. It is
+  read on a collapsed row with a dozen others, so it has to work alone. Say the
+  subject, not the verdict: "Where the permission rule lives", not "Reviewer
+  disagrees". No identifiers, no file names.
+- `wants` — an array of one to three strings, each under fifteen words, saying
+  what the commenter is asking for. One ask per entry. These are read before
+  anything else and often instead of everything else, so they carry the
+  substance, not a trailer for it. Not full sentences, no trailing full stops.
+- `summary` — what the commenter is actually asking, in plain English, for
+  someone who read the bullets and wants the rest. Two or three sentences. No
   identifiers, paths or line numbers in this field. The reader is not an
   engineer. Say what it means for the change, not what the code says.
-- `recommendation` — one or two sentences on what you would do and why. If you
-  think the comment is wrong, say that plainly.
+- `recommendation` — one or two sentences on what you would do and why. Lead
+  with the verdict — "Take it", "Push back", "Already handled" — then the
+  reason. If you think the comment is wrong, say that plainly.
 - `reply_draft` — for `reply`, the message to send, written as the PR author
   speaking to the commenter. Direct and courteous, no throat-clearing, no
   apologising for existing. If you are pushing back, give the actual reason.
@@ -279,7 +311,10 @@ Output only a JSON array inside <ACTIONS>...</ACTIONS>, one object per comment,
 in the same order, each carrying the `thread_id` it belongs to:
 
 <ACTIONS>
-[{{"thread_id": "...", "action": "reply", "summary": "...", "recommendation": "...",
+[{{"thread_id": "...", "action": "reply",
+   "headline": "Where the permission rule lives",
+   "wants": ["Move it out of the shared file", "Scope it to this feature"],
+   "summary": "...", "recommendation": "...",
    "reply_draft": "...", "fix_prompt": "...", "confidence": "high"}}]
 </ACTIONS>
 
@@ -324,7 +359,7 @@ async def triage(number, title, threads):
             return {"ok": False, "error": f"timed out after {ANALYSIS_TIMEOUT}s"}
 
     if proc.returncode != 0:
-        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
 
     out = stdout.decode(errors="replace")
     if "<ACTIONS>" not in out:
@@ -355,11 +390,12 @@ async def analyse(number):
         for it in items:
             c.execute(
                 """INSERT INTO my_pr_actions
-                     (pr_number, thread_id, action, summary, recommendation,
-                      reply_draft, fix_prompt, confidence, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                     (pr_number, thread_id, action, headline, wants, summary,
+                      recommendation, reply_draft, fix_prompt, confidence, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                    ON CONFLICT(pr_number, thread_id) DO UPDATE SET
-                     action=excluded.action, summary=excluded.summary,
+                     action=excluded.action, headline=excluded.headline,
+                     wants=excluded.wants, summary=excluded.summary,
                      recommendation=excluded.recommendation,
                      reply_draft=excluded.reply_draft,
                      fix_prompt=excluded.fix_prompt,
@@ -367,6 +403,8 @@ async def analyse(number):
                      status='pending', created_at=datetime('now')""",
                 (
                     number, str(it.get("thread_id")), it.get("action", "reply"),
+                    it.get("headline", ""),
+                    json.dumps(it.get("wants") or []),
                     it.get("summary", ""), it.get("recommendation", ""),
                     it.get("reply_draft", ""), it.get("fix_prompt", ""),
                     it.get("confidence", "medium"),
@@ -447,7 +485,7 @@ async def draft_review_request(number):
             return {"ok": False, "error": "timed out drafting the summary"}
 
     if proc.returncode != 0:
-        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
 
     out = stdout.decode(errors="replace")
     if "<SUMMARY>" not in out:
@@ -705,7 +743,7 @@ async def refine(number, thread_id, note):
             return {"ok": False, "error": "timed out refining the instruction"}
 
     if proc.returncode != 0:
-        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
 
     out = stdout.decode(errors="replace")
     instruction = _block(out, "INSTRUCTION")
@@ -880,7 +918,7 @@ async def bundle(number):
             return {"ok": False, "error": "timed out merging the decisions"}
 
     if proc.returncode != 0:
-        return {"ok": False, "error": (stderr.decode(errors="replace") or "").strip()}
+        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
 
     out = stdout.decode(errors="replace")
     instruction = _block(out, "INSTRUCTION")

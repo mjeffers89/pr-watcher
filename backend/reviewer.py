@@ -9,7 +9,7 @@ import json
 import re
 from pathlib import Path
 
-from . import config, db, gh
+from . import config, db, gh, my_prs
 
 PROJECT_DIR = Path(__file__).parent.parent  # pr-watcher-ui/
 PROMPT_PATH = Path(__file__).parent / "reviewer_prompt.md"
@@ -229,10 +229,13 @@ async def _do_review_locked(pr_number: int) -> dict:
     err = stderr.decode(errors="replace")
 
     if proc.returncode != 0:
-        db.log_action(pr_number, "review_failed", err[:500])
+        # The CLI reports some fatal errors (an expired login, chiefly) on
+        # stdout, so `err` alone can be empty and the UI says nothing at all.
+        reason = my_prs.claude_error(stdout, stderr, proc.returncode)
+        db.log_action(pr_number, "review_failed", reason[:500])
         with db.conn() as c:
             c.execute("UPDATE prs SET status='review_failed' WHERE number=?", (pr_number,))
-        return {"ok": False, "error": err}
+        return {"ok": False, "error": reason}
 
     m = FINDINGS_RE.search(out)
     if not m:
@@ -555,6 +558,7 @@ async def _do_verify_addressed_locked(pr_number: int) -> dict:
     err = stderr.decode(errors="replace")
 
     if proc.returncode != 0:
+        err = my_prs.claude_error(stdout, stderr, proc.returncode)
         db.log_action(pr_number, "address_check_failed", err[:500])
         with db.conn() as c:
             c.execute(

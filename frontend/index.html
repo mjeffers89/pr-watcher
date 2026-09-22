@@ -476,107 +476,103 @@
 
         <div class="space-y-3">
           <template x-for="pr in inBucket(bucket.key)" :key="pr.number">
-            <div class="bg-white border rounded-xl p-4" :class="bucket.ring">
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <a :href="pr.url" class="font-medium text-slate-900 hover:underline"
-                     x-text="'#' + pr.number + ' · ' + pr.title"></a>
-                  <div class="text-xs text-slate-500 mt-1">
-                    <span x-text="pr.checks === 'green' ? 'checks passing'
-                      : pr.checks === 'red' ? 'checks failing'
-                      : pr.checks === 'pending' ? 'checks running' : 'no checks'"></span>
-                    <span x-show="pr.is_draft"> · draft</span>
-                    <span x-show="pr.approvals > 0"> · <span x-text="pr.approvals"></span> approved</span>
-                    <span x-show="pr.review_decision === 'CHANGES_REQUESTED'"> · changes requested</span>
-                    <span x-show="!pr.review_decision && !pr.is_draft"> · no reviewer yet</span>
+            <div class="bg-white border rounded-xl" :class="bucket.ring">
+
+              <!-- Header: what this PR is and what it needs, on two lines -->
+              <div class="p-4">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <a :href="pr.url" class="font-medium text-slate-900 hover:underline"
+                       x-text="'#' + pr.number + ' · ' + pr.title"></a>
+                    <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <template x-for="chip in statusChips(pr)" :key="chip.text">
+                        <span class="text-xs px-2 py-0.5 rounded-full border"
+                              :class="chip.tone" x-text="chip.text"></span>
+                      </template>
+                    </div>
+                  </div>
+                  <div class="flex shrink-0 gap-2">
+                    <button x-show="bucket.key === 'ready'" @click="mergeMyPr(pr.number)"
+                            :disabled="pr.merging"
+                            class="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60">
+                      <span x-show="!pr.merging">Merge</span>
+                      <span x-show="pr.merging">Merging…</span>
+                    </button>
+                    <button x-show="bucket.key === 'comments' && !pr.threads.some(t => t.analysis)"
+                            @click="triagePr(pr.number)" :disabled="triaging === pr.number"
+                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                      <span x-show="triaging !== pr.number">Work out what to do</span>
+                      <span x-show="triaging === pr.number">Reading…</span>
+                    </button>
+                    <button x-show="bucket.key === 'push' && !pr.review_request"
+                            @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
+                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                      <span x-text="drafting === pr.number ? 'Writing…' : 'Draft a review request'"></span>
+                    </button>
                   </div>
                 </div>
-
-                <div class="flex shrink-0 gap-2">
-                  <button x-show="bucket.key === 'ready'" @click="mergeMyPr(pr.number)"
-                          :disabled="pr.merging"
-                          class="px-3 py-1.5 text-xs rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60">
-                    <span x-show="!pr.merging">Merge</span>
-                    <span x-show="pr.merging">Merging…</span>
-                  </button>
-                  <button x-show="bucket.key === 'comments' && !pr.threads.some(t => t.analysis)"
-                          @click="triagePr(pr.number)" :disabled="triaging === pr.number"
-                          class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
-                    <span x-show="triaging !== pr.number">Work out what to do</span>
-                    <span x-show="triaging === pr.number">Reading…</span>
-                  </button>
-                  <button x-show="bucket.key === 'push' && !pr.review_request"
-                          @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
-                          class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
-                    <span x-text="drafting === pr.number ? 'Writing…' : 'Draft a review request'"></span>
-                  </button>
-                  <a x-show="bucket.key === 'push'" :href="pr.url"
-                     class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 text-slate-700 hover:bg-slate-50">
-                    Open on GitHub
-                  </a>
-                </div>
+                <div x-show="pr.merge_error" class="mt-2 text-xs text-red-600" x-text="pr.merge_error"></div>
               </div>
 
-              <div x-show="pr.merge_error" class="mt-2 text-xs text-red-600" x-text="pr.merge_error"></div>
-
-              <!-- Drafted review request, exactly as it will land in the channel -->
+              <!-- Review request: one line until you want it -->
               <template x-if="pr.review_request">
-                <div class="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
-                  <div class="flex items-center justify-between gap-2 mb-2">
-                    <div class="text-xs font-medium text-blue-900">
-                      Review request
-                      <span x-show="pr.review_request.status === 'sent'"
-                            class="ml-1 text-blue-700">· already sent</span>
+                <div class="border-t border-slate-100 px-4 py-3">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="text-sm text-slate-700">
+                      Review request ready
+                      <span x-show="pr.review_request.status === 'sent'" class="text-slate-400">· sent</span>
                     </div>
-                    <button @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
-                            class="text-xs text-blue-700 hover:text-blue-900 underline disabled:opacity-60">
-                      <span x-text="drafting === pr.number ? 'Rewriting…' : 'Rewrite'"></span>
-                    </button>
+                    <div class="flex gap-2">
+                      <button @click="copyText(requestText(pr.review_request), 'req-' + pr.number)"
+                              class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                        <span x-text="copied === ('req-' + pr.number) ? 'Copied' : 'Copy for Teams'"></span>
+                      </button>
+                      <button x-show="teamsConfigured"
+                              @click="sendRequest(pr.number, pr.review_request)"
+                              :disabled="sending === pr.number"
+                              class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60">
+                        <span x-text="sending === pr.number ? 'Posting…' : 'Post to ' + teamsChannel"></span>
+                      </button>
+                      <button @click="openRequest = openRequest === pr.number ? null : pr.number"
+                              class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                        <span x-text="openRequest === pr.number ? 'Hide' : 'Edit'"></span>
+                      </button>
+                    </div>
                   </div>
 
-                  <div class="text-xs text-slate-500 mb-1">Context line — edit freely</div>
-                  <textarea x-model="pr.review_request.summary" rows="2"
-                            class="w-full text-sm px-3 py-2 rounded-md border border-slate-300 mb-2"></textarea>
-
-                  <div class="text-xs text-slate-500 mb-1">How it will look</div>
-                  <div @click="selectAll($el)" title="Click to select all"
-                       class="text-sm bg-white rounded-md p-3 border border-blue-100 cursor-text">
-                    <div class="text-slate-800" x-text="pr.review_request.summary"></div>
-                    <div class="mt-2 text-slate-900" x-text="pr.review_request.title"></div>
-                    <div class="text-blue-700 break-all" x-text="pr.review_request.url"></div>
-                  </div>
-
-                  <div class="flex flex-wrap gap-2 mt-2">
-                    <button x-show="teamsConfigured"
-                            @click="sendRequest(pr.number, pr.review_request)"
-                            :disabled="sending === pr.number"
-                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
-                      <span x-text="sending === pr.number
-                        ? 'Posting…'
-                        : 'Post to Teams — ' + teamsChannel"></span>
-                    </button>
-                    <button @click="copyText(requestText(pr.review_request), 'req-' + pr.number)"
-                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
-                      <span x-text="copied === ('req-' + pr.number) ? 'Copied' : 'Copy for Teams'"></span>
-                    </button>
-                  </div>
-
-                  <div x-show="!teamsConfigured" class="text-xs text-blue-800 mt-2">
-                    No Teams webhook set up yet, so there is nothing to post to. Copy it for
-                    now, or add a Workflows webhook on the Squad Arete channel and put the URL
-                    in <code class="bg-white px-1 rounded">~/.pr-watcher/config.json</code>
-                    as <code class="bg-white px-1 rounded">teams_webhook_url</code>.
+                  <div x-show="openRequest === pr.number" class="mt-2">
+                    <div class="text-xs text-slate-500 mb-1">Context line</div>
+                    <textarea x-model="pr.review_request.summary" rows="3"
+                              class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
+                    <div class="mt-2 text-xs text-slate-500 mb-1">How it lands in the channel</div>
+                    <div @click="selectAll($el)" title="Click to select all"
+                         class="text-sm bg-slate-50 rounded-md p-3 border border-slate-200 cursor-text">
+                      <div class="text-slate-800" x-text="pr.review_request.summary"></div>
+                      <div class="mt-2 text-slate-900" x-text="pr.review_request.title"></div>
+                      <div class="text-blue-700 break-all" x-text="pr.review_request.url"></div>
+                    </div>
+                    <div class="flex gap-2 mt-2">
+                      <button @click="draftRequest(pr.number)" :disabled="drafting === pr.number"
+                              class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60">
+                        <span x-text="drafting === pr.number ? 'Rewriting…' : 'Rewrite it'"></span>
+                      </button>
+                    </div>
+                    <div x-show="!teamsConfigured" class="text-xs text-slate-500 mt-2">
+                      No Teams webhook set up, so there is nothing to post to. Add a Workflows
+                      webhook on the Squad Arete channel and put the URL in
+                      <code class="bg-slate-100 px-1 rounded">~/.pr-watcher/config.json</code>
+                      as <code class="bg-slate-100 px-1 rounded">teams_webhook_url</code>.
+                    </div>
                   </div>
                 </div>
               </template>
 
-              <!-- Everything decided on this PR, collected -->
-              <div x-show="pr.decided_count > 0" class="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+              <!-- The decisions, collected -->
+              <div x-show="pr.decided_count > 0" class="border-t border-slate-100 px-4 py-3">
                 <div class="flex items-center justify-between gap-2 flex-wrap">
-                  <div class="text-xs font-medium text-emerald-900">
-                    <span x-text="pr.decided_count"></span>
-                    <span x-text="pr.decided_count === 1 ? 'comment decided' : 'comments decided'"></span>
-                    <span x-show="pr.threads.length - pr.decided_count > 0" class="text-emerald-700">
+                  <div class="text-sm text-slate-700">
+                    <span x-text="pr.decided_count"></span> decided
+                    <span x-show="pr.threads.length - pr.decided_count > 0" class="text-slate-400">
                       · <span x-text="pr.threads.length - pr.decided_count"></span> to go
                     </span>
                   </div>
@@ -587,7 +583,7 @@
                     </button>
                     <button @click="showSummary = showSummary === pr.number ? null : pr.number"
                             class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
-                      <span x-text="showSummary === pr.number ? 'Hide it' : 'See it first'"></span>
+                      <span x-text="showSummary === pr.number ? 'Hide' : 'See it'"></span>
                     </button>
                     <button @click="saveBundleHandoff(pr.number)"
                             :disabled="handingOff === 'bundle-' + pr.number"
@@ -599,328 +595,251 @@
 
                 <div x-show="showSummary === pr.number" class="mt-2">
                   <pre @click="selectAll($el)" title="Click to select all"
-                       class="text-xs text-slate-800 whitespace-pre-wrap max-h-72 overflow-y-auto bg-white rounded p-3 border border-emerald-100 cursor-text"
+                       class="text-xs text-slate-800 whitespace-pre-wrap max-h-72 overflow-y-auto bg-slate-50 rounded p-3 border border-slate-200 cursor-text"
                        x-text="summaryText(pr)"></pre>
                 </div>
 
                 <div x-show="pr.bundle && pr.bundle.handoff_path" class="mt-2">
-                  <div class="text-xs text-emerald-900 mb-1">
+                  <div class="text-xs text-slate-500 mb-1">
                     Saved. Paste this into Claude Code in your learnamp checkout:
                   </div>
                   <pre @click="selectAll($el)" title="Click to select all"
-                       class="text-xs text-slate-800 whitespace-pre-wrap bg-white rounded p-2 border border-emerald-100 cursor-text"
+                       class="text-xs text-slate-800 whitespace-pre-wrap bg-slate-50 rounded p-2 border border-slate-200 cursor-text"
                        x-text="'Read ' + (pr.bundle && pr.bundle.handoff_path) + ' and work through it.'"></pre>
-                  <button @click="copyText('Read ' + pr.bundle.handoff_path + ' and work through it.', 'bhand-' + pr.number)"
-                          class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                    <span x-text="copied === ('bhand-' + pr.number) ? 'Copied' : 'Copy that line'"></span>
-                  </button>
-                </div>
-
-                <!-- Optional extra pass. The summary above is faithful to what
-                     you wrote; this rewrites it into a single ordered job. -->
-                <div class="mt-3 pt-3 border-t border-emerald-200">
-                  <button @click="buildBundle(pr.number)" :disabled="bundling === pr.number"
-                          class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60">
-                    <span x-text="bundling === pr.number
-                      ? 'Merging…'
-                      : 'Optional: tidy it into one ordered job'"></span>
-                  </button>
-                  <span class="text-xs text-emerald-800 ml-2">
-                    Takes a minute. Sequences the work and writes one reply for the PR.
-                  </span>
-
-                  <template x-if="pr.bundle && pr.bundle.instruction">
-                    <div class="mt-3 space-y-3">
-                      <div x-show="bundleNotes" class="rounded-md border border-slate-200 bg-white p-2">
-                        <div class="text-xs text-slate-500 mb-1">Worth knowing about the merge</div>
-                        <div class="text-sm text-slate-700" x-html="renderMd(bundleNotes)"></div>
-                      </div>
-
-                      <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                        <div class="text-xs font-medium text-amber-900 mb-1">Merged into one job</div>
-                        <pre @click="selectAll($el)" title="Click to select all"
-                             class="text-xs text-slate-800 whitespace-pre-wrap max-h-56 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
-                             x-text="pr.bundle.instruction"></pre>
-                        <button @click="copyText(pr.bundle.instruction, 'bun-' + pr.number)"
-                                class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                          <span x-text="copied === ('bun-' + pr.number) ? 'Copied' : 'Copy the merged version'"></span>
-                        </button>
-                      </div>
-
-                      <div x-show="pr.bundle.reply" class="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                        <div class="text-xs font-medium text-blue-900 mb-1">
-                          One comment covering all of it
-                          <span x-show="pr.bundle.status === 'posted'" class="text-blue-700">· already posted</span>
-                        </div>
-                        <textarea x-model="pr.bundle.reply" rows="8"
-                                  class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
-                        <div class="flex flex-wrap gap-2 mt-2">
-                          <button @click="postBundle(pr.number, pr.bundle)"
-                                  :disabled="postingBundle === pr.number"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
-                            <span x-text="postingBundle === pr.number ? 'Posting…' : 'Post it on the PR'"></span>
-                          </button>
-                          <button @click="copyText(pr.bundle.reply, 'brep-' + pr.number)"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
-                            <span x-text="copied === ('brep-' + pr.number) ? 'Copied' : 'Copy it instead'"></span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </template>
                 </div>
               </div>
 
-              <!-- Outstanding feedback, one card per thread -->
-              <div x-show="pr.threads.length > 0" class="mt-3 space-y-2">
-                <div class="text-xs text-slate-500">
-                  <span x-text="pr.threads.length"></span> waiting on you
+              <!-- Comments: one scannable row each, opened one at a time -->
+              <div x-show="pr.threads.length > 0" class="border-t border-slate-100">
+                <div class="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Waiting on you
                 </div>
+
                 <template x-for="t in pr.threads" :key="t.root_id">
                   <div x-show="!t.analysis || t.analysis.status === 'pending'"
-                       class="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                    <div class="flex items-center justify-between gap-2 mb-1">
-                      <div class="text-xs text-slate-600">
-                        <span class="font-medium" x-text="t.author"></span>
-                        <span x-show="t.path" class="text-slate-400"
-                              x-text="' · ' + t.path + ':' + t.line"></span>
-                      </div>
-                      <span x-show="t.analysis"
-                            class="text-xs px-2 py-0.5 rounded-full border font-medium"
+                       class="border-t border-slate-100 first:border-t-0">
+
+                    <!-- Collapsed row -->
+                    <button @click="openThread = openThread === t.root_id ? null : t.root_id"
+                            class="w-full text-left px-4 py-3 hover:bg-slate-50 flex items-start gap-3">
+                      <span class="shrink-0 mt-0.5 text-xs px-2 py-0.5 rounded-full border font-medium"
                             :class="actionClass(t.analysis && t.analysis.action)"
                             x-text="actionLabel(t.analysis && t.analysis.action)"></span>
-                    </div>
+                      <span class="flex-1 min-w-0">
+                        <span class="block text-sm font-medium text-slate-900"
+                              x-text="threadHeadline(t)"></span>
+                        <span class="block text-xs text-slate-500 mt-0.5">
+                          <span x-text="t.author"></span>
+                          <span x-show="t.path" x-text="' · ' + t.path + ':' + t.line"></span>
+                          <span x-show="t.refinement && t.refinement.instruction"
+                                class="text-emerald-700"> · decided</span>
+                        </span>
+                      </span>
+                      <span class="shrink-0 text-slate-400 text-xs mt-1"
+                            x-text="openThread === t.root_id ? '▲' : '▼'"></span>
+                    </button>
 
-                    <!-- Before triage: the raw comment -->
-                    <div x-show="!t.analysis"
-                         class="text-sm text-slate-700 whitespace-pre-wrap max-h-32 overflow-hidden"
-                         x-text="t.body"></div>
+                    <!-- Expanded -->
+                    <div x-show="openThread === t.root_id" class="px-4 pb-4">
 
-                    <!-- After triage: what it means and what to do -->
-                    <template x-if="t.analysis">
-                      <div>
-                        <p class="text-sm text-slate-800 leading-relaxed" x-text="t.analysis.summary"></p>
-                        <div class="mt-2 pt-2 border-t border-slate-200">
-                          <div class="text-xs text-slate-500 mb-1">What I would do</div>
-                          <p class="text-sm text-slate-700 leading-relaxed" x-text="t.analysis.recommendation"></p>
-                        </div>
+                      <div x-show="!t.analysis" class="text-sm text-slate-700 whitespace-pre-wrap
+                                  bg-slate-50 rounded-md p-3 border border-slate-200 max-h-48 overflow-y-auto"
+                           x-text="t.body"></div>
 
-                        <!-- Needs a code change: hand it to Claude -->
-                        <div x-show="t.analysis.fix_prompt"
-                             class="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-                          <div class="text-xs font-medium text-amber-900 mb-1">
-                            <span x-show="t.analysis.action === 'code_fix'">
-                              This needs a code change. Hand this to Claude in the learnamp repo:
-                            </span>
-                            <span x-show="t.analysis.action !== 'code_fix'">
-                              Or, if you agree with them, hand this to Claude instead of replying:
-                            </span>
+                      <template x-if="t.analysis">
+                        <div>
+                          <div x-show="threadWants(t).length" class="mb-3">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                              What they want
+                            </div>
+                            <ul class="space-y-1">
+                              <template x-for="(w, wi) in threadWants(t)" :key="wi">
+                                <li class="text-sm text-slate-800 flex gap-2">
+                                  <span class="text-slate-400">•</span><span x-text="w"></span>
+                                </li>
+                              </template>
+                            </ul>
                           </div>
-                          <pre @click="selectAll($el)" title="Click to select all"
-                               class="text-xs text-slate-800 whitespace-pre-wrap max-h-40 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
-                               x-text="t.analysis.fix_prompt"></pre>
-                          <div class="flex gap-2 mt-2">
-                            <button @click="copyText(t.analysis.fix_prompt, 'fix-' + t.root_id)"
-                                    class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                              <span x-text="copied === ('fix-' + t.root_id) ? 'Copied' : 'Copy the instruction'"></span>
-                            </button>
-                          </div>
-                          <div class="text-xs text-amber-800 mt-2">
-                            Paste it into Claude Code in
-                            <code class="bg-white px-1 rounded" x-text="repoDir || 'your learnamp checkout'"></code>,
-                            on a branch off this PR. It will make the change, add the test and tell you what it ran.
-                          </div>
-                        </div>
 
-                        <!-- Needs an answer: send it -->
-                        <div x-show="t.analysis.reply_draft" class="mt-3">
-                          <div class="text-xs text-slate-500 mb-1">
-                            <span x-show="t.analysis.action === 'reply'">Reply to send</span>
-                            <span x-show="t.analysis.action === 'code_fix'">Holding reply, so they know it is in hand</span>
+                          <div class="mb-3">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+                              What I would do
+                            </div>
+                            <p class="text-sm text-slate-800 leading-relaxed" x-text="t.analysis.recommendation"></p>
                           </div>
-                          <textarea x-model="t.analysis.reply_draft" rows="3"
-                                    class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
-                        </div>
 
-                        <div class="flex gap-2 mt-2">
-                          <button x-show="t.analysis.reply_draft"
-                                  @click="sendThreadReply(pr.number, t)"
-                                  :disabled="replying === t.root_id"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
-                            <span x-text="replying === t.root_id ? 'Sending…' : 'Send this reply'"></span>
-                          </button>
-                          <button @click="toggleRefine(pr.number, t)"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-400 text-slate-800 hover:bg-slate-50">
-                            <span x-text="refineFor === t.root_id ? 'Close' : 'Take part of this'"></span>
-                          </button>
-                          <button @click="toggleThreadChat(pr.number, t)"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
-                            <span x-text="threadChatFor === t.root_id ? 'Close' : 'Talk it through'"></span>
-                          </button>
-                          <button @click="skipThread(pr.number, t)"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-200 hover:bg-slate-300">
-                            <span x-text="t.analysis.action === 'no_action' ? 'Nothing to do' : 'Skip'"></span>
-                          </button>
-                        </div>
+                          <details class="mb-3">
+                            <summary class="text-xs text-slate-500 cursor-pointer hover:text-slate-700">
+                              The longer version
+                            </summary>
+                            <p class="text-sm text-slate-700 leading-relaxed mt-2" x-text="t.analysis.summary"></p>
+                            <div class="mt-2">
+                              <div class="text-xs text-slate-500 mb-1">What they actually wrote</div>
+                              <div class="text-sm text-slate-700 whitespace-pre-wrap bg-slate-50 rounded-md p-3 border border-slate-200 max-h-48 overflow-y-auto"
+                                   x-text="t.body"></div>
+                            </div>
+                          </details>
 
-                        <!-- Partial agreement: the author says which parts they
-                             are taking, and that becomes the instruction. -->
-                        <div x-show="refineFor === t.root_id"
-                             class="mt-3 rounded-lg border border-slate-400 bg-white p-3">
-                          <div class="text-xs font-medium text-slate-800 mb-1">
-                            What are you actually going to do about it?
-                          </div>
-                          <div class="text-xs text-slate-500 mb-2">
-                            Your own words. Say which bits you are taking and which you are not,
-                            and why. No need to be tidy about it.
-                          </div>
-                          <textarea x-model="refineNote" rows="3"
-                                    placeholder="Fair point about the controller so I'll split that out, but I'm not renaming the route — too much churn for no gain."
-                                    class="w-full text-sm px-3 py-2 rounded-md border border-slate-300 mb-2"></textarea>
-                          <button @click="runRefine(pr.number, t)"
-                                  :disabled="refining || !refineNote.trim()"
-                                  class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
-                            <span x-text="refining ? 'Working it up…' : 'Turn this into an instruction'"></span>
-                          </button>
+                          <!-- Actions come after the reading, never before -->
+                          <div class="pt-3 border-t border-slate-100">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                              What now
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                              <button x-show="t.analysis.reply_draft"
+                                      @click="openAction = openAction === ('reply-' + t.root_id) ? null : ('reply-' + t.root_id)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                                Reply to them
+                              </button>
+                              <button @click="toggleRefine(pr.number, t); openAction = openAction === ('refine-' + t.root_id) ? null : ('refine-' + t.root_id)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-400 text-slate-800 hover:bg-slate-50">
+                                Take part of it
+                              </button>
+                              <button x-show="t.analysis.fix_prompt"
+                                      @click="openAction = openAction === ('fix-' + t.root_id) ? null : ('fix-' + t.root_id)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                                Just do what they asked
+                              </button>
+                              <button @click="toggleThreadChat(pr.number, t)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                                Talk it through
+                              </button>
+                              <button @click="skipThread(pr.number, t)"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-slate-100 hover:bg-slate-200">
+                                <span x-text="t.analysis.action === 'no_action' ? 'Nothing to do' : 'Skip'"></span>
+                              </button>
+                            </div>
 
-                          <template x-if="t.refinement && t.refinement.instruction">
-                            <div class="mt-3 space-y-3">
-                              <div x-show="refineNotes" class="rounded-md border border-slate-200 bg-slate-50 p-2">
-                                <div class="text-xs text-slate-500 mb-1">Worth knowing</div>
-                                <div class="text-sm text-slate-700" x-html="renderMd(refineNotes)"></div>
+                            <!-- Reply -->
+                            <div x-show="openAction === ('reply-' + t.root_id)" class="mt-3">
+                              <textarea x-model="t.analysis.reply_draft" rows="4"
+                                        class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
+                              <button @click="sendThreadReply(pr.number, t)"
+                                      :disabled="replying === t.root_id"
+                                      class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                                <span x-text="replying === t.root_id ? 'Sending…' : 'Send it'"></span>
+                              </button>
+                            </div>
+
+                            <!-- Do exactly what they asked -->
+                            <div x-show="openAction === ('fix-' + t.root_id)" class="mt-3">
+                              <div class="text-xs text-slate-500 mb-1">
+                                Hand this to Claude in
+                                <code class="bg-slate-100 px-1 rounded" x-text="repoDir || 'your checkout'"></code>
                               </div>
+                              <pre @click="selectAll($el)" title="Click to select all"
+                                   class="text-xs text-slate-800 whitespace-pre-wrap max-h-48 overflow-y-auto bg-slate-50 rounded p-2 border border-slate-200 cursor-text"
+                                   x-text="t.analysis.fix_prompt"></pre>
+                              <button @click="copyText(t.analysis.fix_prompt, 'fix-' + t.root_id)"
+                                      class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                                <span x-text="copied === ('fix-' + t.root_id) ? 'Copied' : 'Copy it'"></span>
+                              </button>
+                            </div>
 
-                              <div class="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                                <div class="text-xs font-medium text-amber-900 mb-1">
-                                  Instruction for the Claude session working on this feature
-                                </div>
-                                <pre @click="selectAll($el)" title="Click to select all"
-                                     class="text-xs text-slate-800 whitespace-pre-wrap max-h-56 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
-                                     x-text="t.refinement.instruction"></pre>
-                                <div class="flex flex-wrap gap-2 mt-2">
-                                  <button @click="copyText(t.refinement.instruction, 'ref-' + t.root_id)"
-                                          class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                                    <span x-text="copied === ('ref-' + t.root_id) ? 'Copied' : 'Copy it'"></span>
-                                  </button>
-                                  <button @click="saveHandoff(pr.number, t)"
-                                          :disabled="handingOff === t.root_id"
-                                          class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60">
-                                    <span x-text="handingOff === t.root_id ? 'Saving…' : 'Save it as a file'"></span>
-                                  </button>
-                                </div>
+                            <!-- Take part of it -->
+                            <div x-show="openAction === ('refine-' + t.root_id)" class="mt-3">
+                              <div class="text-xs text-slate-500 mb-2">
+                                Say which bits you are taking and which you are not. Your own words,
+                                no need to be tidy.
+                              </div>
+                              <textarea x-model="refineNote" rows="3"
+                                        placeholder="Fair point about the controller so I'll split that out, but I'm not renaming the route."
+                                        class="w-full text-sm px-3 py-2 rounded-md border border-slate-300 mb-2"></textarea>
+                              <button @click="runRefine(pr.number, t)"
+                                      :disabled="refining || !refineNote.trim()"
+                                      class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                                <span x-text="refining ? 'Working it up…' : 'Turn it into an instruction'"></span>
+                              </button>
 
-                                <div x-show="t.refinement.handoff_path" class="mt-2">
-                                  <div class="text-xs text-amber-900 mb-1">
-                                    Saved. Paste this into Claude Code in your learnamp checkout:
+                              <template x-if="t.refinement && t.refinement.instruction">
+                                <div class="mt-3 space-y-2">
+                                  <div x-show="refineNotes" class="rounded-md border border-slate-200 bg-slate-50 p-2">
+                                    <div class="text-xs text-slate-500 mb-1">Worth knowing</div>
+                                    <div class="text-sm text-slate-700" x-html="renderMd(refineNotes)"></div>
                                   </div>
                                   <pre @click="selectAll($el)" title="Click to select all"
-                                       class="text-xs text-slate-800 whitespace-pre-wrap bg-white rounded p-2 border border-amber-100 cursor-text"
-                                       x-text="'Read ' + t.refinement.handoff_path + ' and do what it says.'"></pre>
-                                  <button @click="copyText('Read ' + t.refinement.handoff_path + ' and do what it says.', 'hand-' + t.root_id)"
-                                          class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                                    <span x-text="copied === ('hand-' + t.root_id) ? 'Copied' : 'Copy that line'"></span>
-                                  </button>
+                                       class="text-xs text-slate-800 whitespace-pre-wrap max-h-48 overflow-y-auto bg-slate-50 rounded p-2 border border-slate-200 cursor-text"
+                                       x-text="t.refinement.instruction"></pre>
+                                  <div class="flex flex-wrap gap-2">
+                                    <button @click="copyText(t.refinement.instruction, 'ref-' + t.root_id)"
+                                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                                      <span x-text="copied === ('ref-' + t.root_id) ? 'Copied' : 'Copy it'"></span>
+                                    </button>
+                                    <button x-show="t.refinement.reply_draft"
+                                            @click="sendThreadReplyBody(pr.number, t, t.refinement.reply_draft, 'refrep-' + t.root_id)"
+                                            :disabled="replying !== null"
+                                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-50">
+                                      <span x-text="replying === ('refrep-' + t.root_id) ? 'Sending…' : 'Send them the reply'"></span>
+                                    </button>
+                                  </div>
                                 </div>
-                              </div>
+                              </template>
+                            </div>
 
-                              <div x-show="t.refinement.reply_draft"
-                                   class="rounded-lg border border-blue-200 bg-blue-50 p-3">
-                                <div class="text-xs font-medium text-blue-900 mb-1">
-                                  Reply saying what you are taking and what you are not
-                                </div>
-                                <textarea x-model="t.refinement.reply_draft" rows="4"
-                                          class="w-full text-sm px-3 py-2 rounded-md border border-slate-300"></textarea>
-                                <button @click="sendThreadReplyBody(pr.number, t, t.refinement.reply_draft, 'refrep-' + t.root_id)"
-                                        :disabled="replying !== null"
-                                        class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
-                                  <span x-text="replying === ('refrep-' + t.root_id) ? 'Sending…' : 'Send this reply'"></span>
+                            <!-- Clarifier -->
+                            <div x-show="threadChatFor === t.root_id"
+                                 class="mt-3 rounded-lg border border-slate-300 bg-slate-50 p-3">
+                              <div class="flex items-center justify-between mb-2">
+                                <div class="text-xs font-medium text-slate-700">Talking it through</div>
+                                <button @click="resetThreadChat()"
+                                        class="text-xs text-slate-500 hover:text-slate-800 underline">Start over</button>
+                              </div>
+                              <div class="space-y-2 mb-2">
+                                <template x-for="(m, mi) in threadChatMessages" :key="mi">
+                                  <div>
+                                    <div x-show="m.role === 'user'" class="flex justify-end">
+                                      <div class="max-w-[85%] rounded-lg bg-slate-900 text-white px-3 py-2 text-sm whitespace-pre-wrap"
+                                           x-text="m.content"></div>
+                                    </div>
+                                    <div x-show="m.role === 'assistant'" class="space-y-2">
+                                      <template x-for="(part, pi) in clarifierParts(m.content)" :key="pi">
+                                        <div>
+                                          <div x-show="part.type === 'text'"
+                                               class="rounded-lg bg-white border border-slate-200 px-3 py-2 text-sm text-slate-800 leading-relaxed"
+                                               x-html="renderMd(part.body)"></div>
+                                          <div x-show="part.type === 'reply'"
+                                               class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                                            <div class="text-xs text-blue-800 font-medium mb-1">Reply to send</div>
+                                            <div class="text-sm text-slate-800 whitespace-pre-wrap" x-text="part.body"></div>
+                                            <button @click="sendThreadReplyBody(pr.number, t, part.body, mi + '-' + pi)"
+                                                    :disabled="replying !== null"
+                                                    class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                                              <span x-text="replying === (mi + '-' + pi) ? 'Sending…' : 'Send this'"></span>
+                                            </button>
+                                          </div>
+                                          <div x-show="part.type === 'fix'"
+                                               class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                                            <div class="text-xs text-amber-900 font-medium mb-1">Instruction for Claude</div>
+                                            <pre @click="selectAll($el)" title="Click to select all"
+                                                 class="text-xs text-slate-800 whitespace-pre-wrap max-h-40 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
+                                                 x-text="part.body"></pre>
+                                            <button @click="copyText(part.body, 'cfix-' + mi + '-' + pi)"
+                                                    class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                                              <span x-text="copied === ('cfix-' + mi + '-' + pi) ? 'Copied' : 'Copy it'"></span>
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </template>
+                                    </div>
+                                  </div>
+                                </template>
+                              </div>
+                              <div x-show="threadChatBusy" class="text-xs text-slate-500 mb-2">Claude is reading the PR…</div>
+                              <div class="flex gap-2">
+                                <input x-model="threadChatInput" @keydown.enter="sendThreadChat()"
+                                       :disabled="threadChatBusy"
+                                       placeholder="I think they are right — what would changing it involve?"
+                                       class="flex-1 px-3 py-2 text-sm rounded-md border border-slate-300 disabled:bg-slate-100" />
+                                <button @click="sendThreadChat()" :disabled="threadChatBusy"
+                                        class="px-4 py-2 text-sm rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
+                                  Send
                                 </button>
                               </div>
                             </div>
-                          </template>
-                        </div>
-
-                        <!-- Clarifier: scoped to this one comment, so several
-                             threads on a PR never bleed into each other. -->
-                        <div x-show="threadChatFor === t.root_id"
-                             class="mt-3 rounded-lg border border-slate-300 bg-white p-3">
-                          <div class="flex items-center justify-between mb-2">
-                            <div class="text-xs font-medium text-slate-700">Talking through this comment</div>
-                            <button @click="resetThreadChat()"
-                                    class="text-xs text-slate-500 hover:text-slate-800 underline">Start over</button>
-                          </div>
-
-                          <div x-show="threadChatMessages.length === 0" class="text-xs text-slate-500 mb-2">
-                            Agree with them and want to know what changing it involves? Think they
-                            are wrong and want to sense-check that first? Ask.
-                          </div>
-
-                          <div class="space-y-2 mb-2">
-                            <template x-for="(m, mi) in threadChatMessages" :key="mi">
-                              <div>
-                                <div x-show="m.role === 'user'" class="flex justify-end">
-                                  <div class="max-w-[85%] rounded-lg bg-slate-900 text-white px-3 py-2 text-sm whitespace-pre-wrap"
-                                       x-text="m.content"></div>
-                                </div>
-                                <div x-show="m.role === 'assistant'" class="space-y-2">
-                                  <template x-for="(part, pi) in clarifierParts(m.content)" :key="pi">
-                                    <div>
-                                      <div x-show="part.type === 'text'"
-                                           class="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-sm text-slate-800 leading-relaxed"
-                                           x-html="renderMd(part.body)"></div>
-
-                                      <div x-show="part.type === 'reply'"
-                                           class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
-                                        <div class="text-xs text-blue-800 font-medium mb-1">Reply to send</div>
-                                        <div class="text-sm text-slate-800 whitespace-pre-wrap" x-text="part.body"></div>
-                                        <button @click="sendThreadReplyBody(pr.number, t, part.body, mi + '-' + pi)"
-                                                :disabled="replying !== null"
-                                                class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
-                                          <span x-text="replying === (mi + '-' + pi) ? 'Sending…' : 'Send this to the commenter'"></span>
-                                        </button>
-                                      </div>
-
-                                      <div x-show="part.type === 'fix'"
-                                           class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                                        <div class="text-xs text-amber-900 font-medium mb-1">
-                                          Instruction for Claude in your checkout
-                                        </div>
-                                        <pre @click="selectAll($el)" title="Click to select all"
-                                             class="text-xs text-slate-800 whitespace-pre-wrap max-h-40 overflow-y-auto bg-white rounded p-2 border border-amber-100 cursor-text"
-                                             x-text="part.body"></pre>
-                                        <button @click="copyText(part.body, 'cfix-' + mi + '-' + pi)"
-                                                class="mt-2 px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
-                                          <span x-text="copied === ('cfix-' + mi + '-' + pi) ? 'Copied' : 'Copy the instruction'"></span>
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </template>
-                                </div>
-                              </div>
-                            </template>
-                          </div>
-
-                          <div x-show="threadChatBusy" class="flex items-center gap-2 text-xs text-slate-500 mb-2">
-                            <svg class="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
-                              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" opacity=".25"/>
-                              <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="2"/>
-                            </svg>
-                            Claude is reading the PR…
-                          </div>
-
-                          <div class="flex gap-2">
-                            <input x-model="threadChatInput" @keydown.enter="sendThreadChat()"
-                                   :disabled="threadChatBusy"
-                                   placeholder="I think they are right — what would changing it involve?"
-                                   class="flex-1 px-3 py-2 text-sm rounded-md border border-slate-300 disabled:bg-slate-100" />
-                            <button @click="sendThreadChat()" :disabled="threadChatBusy"
-                                    class="px-4 py-2 text-sm rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-50">
-                              Send
-                            </button>
                           </div>
                         </div>
-                      </div>
-                    </template>
+                      </template>
+                    </div>
                   </div>
                 </template>
               </div>
@@ -1077,6 +996,72 @@ function app() {
     ],
 
     inBucket(key) { return this.myTriage.filter(p => p.category === key); },
+
+    // Only one comment and one action open at a time. With fifteen comments on
+    // a PR, everything expanded is the thing that made this unreadable.
+    openThread: null,
+    openAction: null,
+    openRequest: null,
+
+    // Plain-English state chips. Each says what it means for the reader rather
+    // than naming the mechanism: "nobody assigned" beats "reviewDecision: ''".
+    statusChips(pr) {
+      const chips = [];
+      const undecided = pr.threads.length - (pr.decided_count || 0);
+      if (undecided > 0) {
+        chips.push({ text: `${undecided} to decide`,
+                     tone: 'bg-amber-50 text-amber-800 border-amber-200' });
+      }
+      if (pr.decided_count > 0) {
+        chips.push({ text: `${pr.decided_count} decided`,
+                     tone: 'bg-emerald-50 text-emerald-800 border-emerald-200' });
+      }
+      if (pr.is_draft) {
+        chips.push({ text: 'still a draft',
+                     tone: 'bg-slate-100 text-slate-600 border-slate-200' });
+      }
+      if (pr.checks === 'red') {
+        chips.push({ text: 'build failing',
+                     tone: 'bg-red-50 text-red-800 border-red-200' });
+      } else if (pr.checks === 'pending') {
+        chips.push({ text: 'build running',
+                     tone: 'bg-slate-100 text-slate-600 border-slate-200' });
+      } else if (pr.checks === 'green') {
+        chips.push({ text: 'build passing',
+                     tone: 'bg-slate-100 text-slate-600 border-slate-200' });
+      }
+      if (pr.review_decision === 'APPROVED') {
+        chips.push({ text: 'approved',
+                     tone: 'bg-emerald-50 text-emerald-800 border-emerald-200' });
+      } else if (pr.review_decision === 'CHANGES_REQUESTED') {
+        chips.push({ text: 'changes requested',
+                     tone: 'bg-amber-50 text-amber-800 border-amber-200' });
+      } else if (!pr.is_draft) {
+        chips.push({ text: 'nobody assigned',
+                     tone: 'bg-blue-50 text-blue-800 border-blue-200' });
+      }
+      return chips;
+    },
+
+    // Threads triaged before headlines existed fall back to the first sentence
+    // of the summary rather than showing a blank row.
+    threadHeadline(t) {
+      if (t.analysis && t.analysis.headline) return t.analysis.headline;
+      if (t.analysis && t.analysis.summary) {
+        const first = t.analysis.summary.split(/(?<=[.!?])\s/)[0] || t.analysis.summary;
+        return first.length > 90 ? first.slice(0, 87) + '…' : first;
+      }
+      const body = (t.body || '').replace(/\s+/g, ' ').trim();
+      return body.length > 90 ? body.slice(0, 87) + '…' : (body || 'A comment');
+    },
+
+    threadWants(t) {
+      if (!t.analysis || !t.analysis.wants) return [];
+      try {
+        const w = JSON.parse(t.analysis.wants);
+        return Array.isArray(w) ? w : [];
+      } catch (e) { return []; }
+    },
 
     actionLabel(a) {
       return { code_fix: 'Needs a change', reply: 'Needs an answer',
