@@ -410,6 +410,26 @@ async def reset_thread_chat(number: int, thread_id: str):
     return {"ok": True}
 
 
+@app.post("/api/my_prs/{number}/threads/{thread_id}/handed_off")
+async def mark_handed_off(number: int, thread_id: str):
+    """Record that the instruction went to Claude Code.
+
+    Copying a fix is not the end of the thread: the code is not changed yet and
+    the reviewer has not been told anything. Skipping it here would be a lie —
+    Skip means deliberately not acting — and would drop it from the decisions
+    summary. This keeps it on the list, visibly in progress, until a reply
+    actually closes it.
+    """
+    with db.conn() as c:
+        c.execute(
+            "UPDATE my_pr_actions SET status='handed_off' "
+            "WHERE pr_number=? AND thread_id=?",
+            (number, str(thread_id)),
+        )
+    db.log_action(number, "my_pr_handed_off", f"thread {thread_id}")
+    return {"ok": True}
+
+
 @app.post("/api/my_prs/{number}/threads/{thread_id}/skip")
 async def skip_thread(number: int, thread_id: str):
     with db.conn() as c:

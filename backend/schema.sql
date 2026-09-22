@@ -98,7 +98,11 @@ CREATE TABLE IF NOT EXISTS my_pr_actions (
   reply_draft TEXT,
   fix_prompt TEXT,
   confidence TEXT,
-  status TEXT NOT NULL DEFAULT 'pending', -- pending | replied | skipped
+  status TEXT NOT NULL DEFAULT 'pending',
+    -- pending:   still waiting on a decision
+    -- handed_off: the work is with Claude Code, the commenter not told yet
+    -- replied:   the commenter has been answered, loop closed
+    -- skipped:   deliberately not acting on it
   created_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (pr_number, thread_id)
 );
