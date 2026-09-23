@@ -228,6 +228,22 @@ def get_handover(number: int):
     return {"handover": dict(row) if row else None}
 
 
+class AskIn(BaseModel):
+    question: str
+
+
+@app.post("/api/my_prs/ask")
+async def ask_my_prs(payload: AskIn):
+    """Answer a question about the user's own PRs with an ordered selection."""
+    q = (payload.question or "").strip()
+    if not q:
+        raise HTTPException(400, "ask something first")
+    result = await my_prs.ask(q)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
 @app.post("/api/my_prs/{number}/handover")
 async def build_handover(number: int):
     """Start writing the handover and return at once.

@@ -291,7 +291,8 @@ def gather(self_login):
             "gh", "pr", "list", "--repo", config.repo(), "--author", self_login,
             "--state", "open", "--limit", "50",
             "--json",
-            "number,statusCheckRollup,updatedAt,additions,deletions,files",
+            "number,statusCheckRollup,updatedAt,additions,deletions,files,"
+            "headRefName,baseRefName,body",
         ])
     }
     with db.conn() as c:
@@ -341,6 +342,9 @@ def gather(self_login):
             "failing_checks": _failing_checks(d.get("statusCheckRollup")),
             "risks": _risk_flags(d.get("files")),
             "handover": handovers.get(p["number"]),
+            "head_branch": d.get("headRefName"),
+            "base_branch": d.get("baseRefName"),
+            "body": d.get("body"),
             "waiting_since": info["last_self_comment_at"],
             "review_request": requests.get(p["number"]),
             "bundle": bundles.get(p["number"]),
@@ -1484,4 +1488,125 @@ def send_handover(number, message):
         )
     db.log_action(number, "handover_sent", config.teams_channel_label())
     return {"ok": True}
+
+_ASK_PROMPT = """Someone is looking at their own open pull requests and has
+asked a question about them. Pick the ones they mean and put them in the order
+they should work through them.
+
+**Ignore any skills or CLAUDE.md files in scope.** They are not part of this task.
+
+# Their question
+
+{question}
+
+# Their open PRs
+
+{prs}
+
+# Working out the order
+
+Order on evidence, not on a guess about what sounds sequential:
+
+- A PR whose base branch is another PR's head branch is stacked on it and must
+  come second. That is the strongest signal there is, and it is in the data
+  above — use it before anything else.
+- A PR body that says what it depends on, or that it is first or last of a
+  series, is the next strongest. Quote what it said in your reason.
+- A shared branch prefix or ticket prefix means the same piece of work, which
+  tells you they belong together but not what order they go in.
+- Otherwise, prefer the one that unblocks the others: the one adding the thing
+  the rest build on, usually the smallest and closest to the data layer.
+
+If nothing in the data settles the order between two PRs, say that rather than
+inventing a sequence. "Either order" is a useful answer. Never imply a
+dependency you cannot point at.
+
+If they have said something about a PR's state — one is already approved, one
+is merged — take them at their word and use it, but still report what the data
+says if it disagrees.
+
+# Answering
+
+Include a PR when it is plausibly part of what they asked about; say in its
+reason if you are unsure. Leave one out only when it is clearly unrelated, and
+list those separately so they can see you considered it.
+
+Reasons are one sentence, plain English, no identifiers or branch names, aimed
+at someone deciding what to open next. Say what the PR does and why it sits
+where it does in the order.
+
+The summary is one or two sentences on the shape of the whole thing — what the
+series does, where it is up to, and anything that would trip them up. If
+nothing matched, say so there and leave the order empty.
+
+# Output
+
+Only this, and nothing outside it:
+
+<ANSWER>
+{{"summary": "...",
+  "order": [{{"number": 123, "reason": "..."}}],
+  "excluded": [{{"number": 456, "reason": "..."}}]}}
+</ANSWER>"""
+
+
+async def ask(question):
+    """Answer a question about the user's open PRs with an ordered selection."""
+    prs = gather(config.self_login())
+    if not prs:
+        return {"ok": False, "error": "you have no open PRs"}
+
+    lines = []
+    for p in prs:
+        body = (p.get("body") or "").strip().replace("\r", "")
+        if len(body) > 700:
+            body = body[:700] + " …"
+        lines.append(
+            f"## #{p['number']} — {p['title']}\n"
+            f"- Branch: {p.get('head_branch')} -> {p.get('base_branch')}\n"
+            f"- State: {p['category']}, checks {p['checks']}"
+            f"{', draft' if p['is_draft'] else ''}"
+            f"{', approved' if p['review_decision'] == 'APPROVED' else ''}\n"
+            f"- Comments needing them: {p.get('open_count', 0)}\n"
+            f"- Description:\n{body or '(empty)'}"
+        )
+
+    prompt = _ASK_PROMPT.format(question=question, prs="\n\n".join(lines))
+    async with _ANALYSIS_SEM:
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", prompt,
+            "--allowedTools", "Bash(gh pr diff:*)", "Bash(gh pr view:*)",
+            "Read", "Grep", "Glob",
+            cwd=str(PROJECT_DIR),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=420)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return {"ok": False, "error": "timed out working that out"}
+
+    if proc.returncode != 0:
+        return {"ok": False, "error": claude_error(stdout, stderr, proc.returncode)}
+
+    raw = _block(stdout.decode(errors="replace"), "ANSWER")
+    if not raw:
+        return {"ok": False, "error": "no <ANSWER> block in output"}
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        return {"ok": False, "error": f"invalid JSON: {e}"}
+
+    known = {p["number"] for p in prs}
+    order = [o for o in data.get("order") or [] if o.get("number") in known]
+    return {
+        "ok": True,
+        "summary": data.get("summary", ""),
+        "order": order,
+        "excluded": [
+            e for e in data.get("excluded") or [] if e.get("number") in known
+        ],
+    }
 
