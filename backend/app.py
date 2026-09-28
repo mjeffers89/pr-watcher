@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import chat, config, db, gh, merger, my_prs, reviewer, watchers
+from . import branches, chat, config, db, gh, merger, my_prs, reviewer, watchers
 
 FRONTEND = Path(__file__).parent.parent / "frontend"
 
@@ -226,6 +226,52 @@ def get_handover(number: int):
             "SELECT * FROM handovers WHERE pr_number=?", (number,)
         ).fetchone()
     return {"handover": dict(row) if row else None}
+
+
+class RaisePrIn(BaseModel):
+    title: str
+    body: str
+    draft: bool = False
+
+
+@app.get("/api/branches")
+def list_branches(days: int = branches.DEFAULT_DAYS):
+    """Branches carrying unmerged work that were never raised as a PR."""
+    return branches.list_unraised(days=days)
+
+
+@app.post("/api/branches/fetch")
+def fetch_branches():
+    result = branches.fetch()
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/branches/{branch:path}/summarise")
+async def summarise_branch(branch: str):
+    result = await branches.summarise(branch)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@app.post("/api/branches/{branch:path}/raise")
+async def raise_branch_pr(branch: str, payload: RaisePrIn):
+    """Open a PR from a branch that never had one. Push first if it is local."""
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(400, "a PR needs a title")
+    result = branches.raise_pr(branch, title, payload.body or "", payload.draft)
+    if not result["ok"]:
+        raise HTTPException(400, result["error"])
+    watchers.notify(f"Raised a PR from {branch}")
+    return result
+
+
+@app.post("/api/branches/{branch:path}/dismiss")
+def dismiss_branch(branch: str):
+    return branches.dismiss(branch)
 
 
 class AskIn(BaseModel):

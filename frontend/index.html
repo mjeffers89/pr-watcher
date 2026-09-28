@@ -506,6 +506,118 @@
     <div x-show="!myTriageLoading && !myTriageError && myTriage.length === 0"
          class="text-slate-400 italic text-sm">No open PRs of your own.</div>
 
+    <!-- Work that exists but was never raised -->
+    <div x-show="!answer && branches.length > 0">
+      <h2 class="text-sm font-semibold uppercase mb-1 text-purple-700">
+        Not raised yet (<span x-text="branches.length"></span>)
+      </h2>
+      <p class="text-xs text-slate-500 mb-2">
+        Branches in your checkout with work on them and no open PR.
+        <span x-show="branchMeta.fetched_hours_ago !== null && branchMeta.fetched_hours_ago > 12"
+              class="text-amber-700">
+          Last fetched <span x-text="Math.round(branchMeta.fetched_hours_ago)"></span> hours ago —
+          <button @click="fetchBranches()" class="underline" :disabled="fetchingBranches">
+            <span x-text="fetchingBranches ? 'fetching…' : 'refresh'"></span>
+          </button>.
+        </span>
+        <button @click="widenBranches()" class="underline ml-1"
+                x-text="branchDays === 30 ? 'Show older ones' : 'Show only recent'"></button>
+      </p>
+
+      <div class="space-y-3 mb-6">
+        <template x-for="b in branches" :key="b.branch">
+          <div class="bg-white border border-purple-200 rounded-xl p-4">
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="font-medium text-slate-900 font-mono text-sm" x-text="b.branch"></div>
+                <div class="text-sm text-slate-600 mt-0.5" x-text="b.last_subject"></div>
+                <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span class="text-xs px-2 py-0.5 rounded-full border bg-slate-100 text-slate-600 border-slate-200"
+                        x-text="b.ahead === 1 ? '1 commit of its own' : b.ahead + ' commits of its own'"></span>
+                  <span class="text-xs px-2 py-0.5 rounded-full border"
+                        :class="b.behind > 200
+                          ? 'bg-amber-50 text-amber-800 border-amber-200'
+                          : 'bg-slate-100 text-slate-600 border-slate-200'"
+                        x-text="b.behind + ' behind trunk'"></span>
+                  <span x-show="!b.on_remote"
+                        class="text-xs px-2 py-0.5 rounded-full border bg-slate-100 text-slate-600 border-slate-200">
+                    only on this machine
+                  </span>
+                  <span class="text-xs text-slate-400" x-text="'last touched ' + daysSince(b.last_commit_at) + ' days ago'"></span>
+                </div>
+              </div>
+              <div class="flex shrink-0 gap-2">
+                <button @click="summariseBranch(b)" :disabled="summarising === b.branch"
+                        class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-60">
+                  <span x-text="summarising === b.branch
+                    ? 'Reading…'
+                    : ((b.note && b.note.summary) ? 'Read it again' : 'What is on this?')"></span>
+                </button>
+                <button @click="dismissBranch(b)"
+                        class="px-3 py-1.5 text-xs rounded-md bg-slate-100 hover:bg-slate-200">
+                  Not needed
+                </button>
+              </div>
+            </div>
+
+            <template x-if="b.note && b.note.summary">
+              <div class="mt-3 pt-3 border-t border-slate-100 space-y-3">
+                <p class="text-sm text-slate-800 leading-relaxed" x-text="b.note.summary"></p>
+                <div x-show="b.note.state_note" class="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                    Where it got to
+                  </div>
+                  <p class="text-sm text-slate-700 leading-relaxed whitespace-pre-line" x-text="b.note.state_note"></p>
+                </div>
+
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                    What now
+                  </div>
+                  <div class="flex flex-wrap gap-2">
+                    <button @click="openBranchAction = openBranchAction === ('raise-' + b.branch) ? null : ('raise-' + b.branch)"
+                            class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
+                      Raise a PR
+                    </button>
+                    <button @click="copyText(catchUpCommand(b), 'catch-' + b.branch)"
+                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                      <span x-text="copied === ('catch-' + b.branch) ? 'Copied' : 'Copy the catch-up command'"></span>
+                    </button>
+                  </div>
+
+                  <div x-show="openBranchAction === ('raise-' + b.branch)" class="mt-3 space-y-2">
+                    <div x-show="b.behind > 200" class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      This is <span x-text="b.behind"></span> commits behind trunk. Rebase it before
+                      raising, or the diff will be unreadable and CI will fail on things you did not change.
+                    </div>
+                    <div>
+                      <div class="text-xs text-slate-500 mb-1">Title</div>
+                      <input x-model="b.note.pr_title"
+                             class="w-full px-3 py-2 text-sm rounded-md border border-slate-300" />
+                    </div>
+                    <div>
+                      <div class="text-xs text-slate-500 mb-1">Description</div>
+                      <textarea x-model="b.note.pr_body" rows="6"
+                                class="w-full px-3 py-2 text-sm rounded-md border border-slate-300 font-mono"></textarea>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                      <button @click="raiseBranchPr(b)" :disabled="raising === b.branch"
+                              class="px-3 py-1.5 text-xs rounded-md bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-60">
+                        <span x-text="raising === b.branch ? 'Raising…' : 'Raise it as ready for review'"></span>
+                      </button>
+                      <span x-show="!b.on_remote" class="text-xs text-slate-500">
+                        Pushes the branch first — it is only on this machine.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
     <template x-for="bucket in displayGroups()" :key="bucket.key">
       <div x-show="bucket.items.length > 0">
         <h2 class="text-sm font-semibold uppercase mb-1" :class="bucket.tone" x-text="bucket.label"></h2>
@@ -1315,6 +1427,98 @@ function app() {
     asking: false,
     answer: null,
 
+    branches: [],
+    branchMeta: { fetched_hours_ago: null, trunk: 'origin/trunk' },
+    branchDays: 30,
+    summarising: null,
+    raising: null,
+    fetchingBranches: false,
+    openBranchAction: null,
+
+    async loadBranches() {
+      try {
+        const r = await fetch(`/api/branches?days=${this.branchDays}`);
+        const data = await r.json();
+        this.branches = data.branches || [];
+        this.branchMeta = data;
+        if (data.error) this.myTriageError = data.error;
+      } catch (e) { /* non-fatal: the PR side still works without a checkout */ }
+    },
+
+    widenBranches() {
+      this.branchDays = this.branchDays === 30 ? 0 : 30;
+      this.loadBranches();
+    },
+
+    async fetchBranches() {
+      this.fetchingBranches = true;
+      try {
+        await fetch('/api/branches/fetch', { method: 'POST' });
+        await this.loadBranches();
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.fetchingBranches = false;
+      }
+    },
+
+    catchUpCommand(b) {
+      const base = (this.branchMeta.trunk || 'origin/trunk').replace('origin/', '');
+      return `git fetch origin && git checkout ${b.branch} && git rebase origin/${base}`;
+    },
+
+    async summariseBranch(b) {
+      this.summarising = b.branch;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/branches/${b.branch}/summarise`, { method: 'POST' });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not read it (${r.status})`;
+        } else {
+          const d = await r.json();
+          b.note = {
+            summary: d.summary,
+            state_note: [d.state, d.advice].filter(Boolean).join('\n\n'),
+            pr_title: d.pr_title, pr_body: d.pr_body, status: 'open',
+          };
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.summarising = null;
+      }
+    },
+
+    async raiseBranchPr(b) {
+      this.raising = b.branch;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/branches/${b.branch}/raise`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: b.note.pr_title, body: b.note.pr_body }),
+        });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          this.myTriageError = e.detail || `Could not raise it (${r.status})`;
+        } else {
+          this.branches = this.branches.filter(x => x.branch !== b.branch);
+          this.openBranchAction = null;
+          await this.loadMyPrs();
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.raising = null;
+      }
+    },
+
+    async dismissBranch(b) {
+      this.branches = this.branches.filter(x => x.branch !== b.branch);
+      await fetch(`/api/branches/${b.branch}/dismiss`, { method: 'POST' });
+    },
+
     // One group per bucket normally; a single ordered group when an answer is
     // showing. The card markup is the same either way, so every button an
     // answer's PRs carry is the button they always had.
@@ -1559,6 +1763,7 @@ function app() {
     },
 
     async loadMyTriage() {
+      this.loadBranches();
       this.myTriageLoading = true;
       this.myTriageError = '';
       try {

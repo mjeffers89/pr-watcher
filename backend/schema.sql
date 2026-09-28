@@ -165,6 +165,19 @@ CREATE TABLE IF NOT EXISTS handovers (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Notes against a branch that has no PR: what it turned out to be, the PR
+-- drafted for it, and whether it has been dealt with. Keyed on branch name
+-- because there is no PR number to key on yet.
+CREATE TABLE IF NOT EXISTS branch_notes (
+  branch TEXT PRIMARY KEY,
+  summary TEXT,
+  state_note TEXT,      -- whether it looks finished, and what is missing
+  pr_title TEXT,
+  pr_body TEXT,
+  status TEXT NOT NULL DEFAULT 'open', -- open | raised | dismissed
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS watcher_runs (
   name TEXT PRIMARY KEY,
   last_run_at TEXT,
