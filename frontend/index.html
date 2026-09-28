@@ -507,9 +507,9 @@
          class="text-slate-400 italic text-sm">No open PRs of your own.</div>
 
     <!-- Work that exists but was never raised -->
-    <div x-show="!answer && branches.length > 0">
+    <div x-show="answer ? answerBranches.length > 0 : branches.length > 0">
       <h2 class="text-sm font-semibold uppercase mb-1 text-purple-700">
-        Not raised yet (<span x-text="branches.length"></span>)
+        Not raised yet (<span x-text="answer ? answerBranches.length : branches.length"></span>)
       </h2>
       <p class="text-xs text-slate-500 mb-2">
         Branches in your checkout with work on them and no open PR.
@@ -525,10 +525,11 @@
       </p>
 
       <div class="space-y-3 mb-6">
-        <template x-for="b in branches" :key="b.branch">
+        <template x-for="b in (answer ? answerBranches : branches)" :key="b.branch">
           <div class="bg-white border border-purple-200 rounded-xl p-4">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
+                <div x-show="answer && b.askReason" class="text-sm text-slate-700 mb-1" x-text="b.askReason"></div>
                 <div class="font-medium text-slate-900 font-mono text-sm" x-text="b.branch"></div>
                 <div class="text-sm text-slate-600 mt-0.5" x-text="b.last_subject"></div>
                 <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -1428,6 +1429,7 @@ function app() {
     answer: null,
 
     branches: [],
+    answerBranches: [],
     branchMeta: { fetched_hours_ago: null, trunk: 'origin/trunk' },
     branchDays: 30,
     summarising: null,
@@ -1526,13 +1528,22 @@ function app() {
       if (this.answer) {
         const byNum = {};
         this.myTriage.forEach(p => { byNum[p.number] = p; });
-        const items = this.answer.order
-          .map(o => {
-            const pr = byNum[o.number];
-            if (pr) pr.askReason = o.reason;
-            return pr;
-          })
-          .filter(Boolean);
+        const byBranch = {};
+        // The answer carries its own branch rows, which may reach further back
+        // than the window the page has loaded.
+        [...this.branches, ...(this.answer.branches || [])]
+          .forEach(b => { byBranch[b.branch] = b; });
+        const items = [], answerBranches = [];
+        this.answer.order.forEach(o => {
+          if (o.branch) {
+            const b = byBranch[o.branch];
+            if (b) { b.askReason = o.reason; answerBranches.push(b); }
+            return;
+          }
+          const pr = byNum[o.number];
+          if (pr) { pr.askReason = o.reason; items.push(pr); }
+        });
+        this.answerBranches = answerBranches;
         return [{
           key: 'answer', label: 'In this order', blurb: '',
           tone: 'text-slate-900', ring: 'border-slate-300', items,
@@ -1559,7 +1570,7 @@ function app() {
         } else {
           const data = await r.json();
           this.answer = data;
-          if (!data.order.length) {
+          if (!data.order.length && !(data.excluded || []).length) {
             this.myTriageError = 'Nothing matched that — try describing the work differently.';
           }
         }

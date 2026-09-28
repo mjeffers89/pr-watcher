@@ -1503,6 +1503,13 @@ they should work through them.
 
 {prs}
 
+# Their branches with no PR raised
+
+Work that exists but was never raised. It counts as part of a series exactly
+like a PR does, and is often where the earlier or abandoned parts of one live.
+
+{branches}
+
 # Working out the order
 
 Order on evidence, not on a guess about what sounds sequential:
@@ -1543,9 +1550,15 @@ nothing matched, say so there and leave the order empty.
 
 Only this, and nothing outside it:
 
+Each entry in `order` is either a PR (`"number"`) or a branch (`"branch"`),
+never both. Include branches wherever they are part of what was asked about —
+leaving them out is how a question about a series comes back empty when the
+work is sitting right there.
+
 <ANSWER>
 {{"summary": "...",
-  "order": [{{"number": 123, "reason": "..."}}],
+  "order": [{{"number": 123, "reason": "..."}},
+            {{"branch": "la-1234/thing", "reason": "..."}}],
   "excluded": [{{"number": 456, "reason": "..."}}]}}
 </ANSWER>"""
 
@@ -1571,7 +1584,26 @@ async def ask(question):
             f"- Description:\n{body or '(empty)'}"
         )
 
-    prompt = _ASK_PROMPT.format(question=question, prs="\n\n".join(lines))
+    from . import branches as branches_mod
+    b_listing = branches_mod.list_unraised(days=0)
+    b_lines = []
+    for b in b_listing.get("branches", []):
+        note = b.get("note") or {}
+        b_lines.append(
+            f"## branch `{b['branch']}`"
+            f"{' (ticket ' + b['ticket'] + ')' if b['ticket'] else ''}\n"
+            f"- {b['ahead']} unmerged commit(s), {b['behind']} behind trunk, "
+            f"last touched {b['last_commit_at'][:10]}"
+            f"{', never pushed' if not b['on_remote'] else ''}\n"
+            f"- Latest commit: {b['last_subject']}\n"
+            f"- Known: {note.get('summary') or 'not looked at yet'}"
+        )
+
+    prompt = _ASK_PROMPT.format(
+        question=question,
+        prs="\n\n".join(lines),
+        branches="\n\n".join(b_lines) or "(none)",
+    )
     async with _ANALYSIS_SEM:
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p", prompt,
@@ -1600,11 +1632,23 @@ async def ask(question):
         return {"ok": False, "error": f"invalid JSON: {e}"}
 
     known = {p["number"] for p in prs}
-    order = [o for o in data.get("order") or [] if o.get("number") in known]
+    known_branches = {b["branch"] for b in b_listing.get("branches", [])}
+    order = [
+        o for o in data.get("order") or []
+        if o.get("number") in known or o.get("branch") in known_branches
+    ]
+    # Ship the full detail for any branch named, so the page can render it
+    # without re-scanning: an answer often reaches back past the window the
+    # browser has loaded, and half the series would silently vanish.
+    by_branch = {b["branch"]: b for b in b_listing.get("branches", [])}
     return {
         "ok": True,
         "summary": data.get("summary", ""),
         "order": order,
+        "branches": [
+            by_branch[o["branch"]] for o in order
+            if o.get("branch") and o["branch"] in by_branch
+        ],
         "excluded": [
             e for e in data.get("excluded") or [] if e.get("number") in known
         ],
