@@ -269,6 +269,15 @@ async def raise_branch_pr(branch: str, payload: RaisePrIn):
     return result
 
 
+@app.post("/api/branches/{branch:path}/catch_up")
+def catch_up_branch(branch: str):
+    """Bring a drifted branch up to date with trunk, if it can be done cleanly."""
+    result = branches.try_catch_up(branch)
+    if not result["ok"] and not result.get("conflicted"):
+        raise HTTPException(400, result["error"])
+    return result
+
+
 @app.post("/api/branches/{branch:path}/dismiss")
 def dismiss_branch(branch: str):
     return branches.dismiss(branch)

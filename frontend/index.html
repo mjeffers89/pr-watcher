@@ -580,16 +580,51 @@
                             class="px-3 py-1.5 text-xs rounded-md bg-slate-900 text-white hover:bg-slate-700">
                       Raise a PR
                     </button>
-                    <button @click="copyText(catchUpCommand(b), 'catch-' + b.branch)"
-                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
-                      <span x-text="copied === ('catch-' + b.branch) ? 'Copied' : 'Copy the catch-up command'"></span>
+                    <button x-show="b.behind > 0" @click="catchUp(b)"
+                            :disabled="catchingUp === b.branch"
+                            class="px-3 py-1.5 text-xs rounded-md bg-white border border-slate-400 text-slate-800 hover:bg-slate-50 disabled:opacity-60">
+                      <span x-text="catchingUp === b.branch
+                        ? 'Catching it up…'
+                        : 'Catch it up with trunk'"></span>
                     </button>
+                  </div>
+
+                  <div x-show="b.catchUpResult" class="mt-3">
+                    <div x-show="b.catchUpResult && b.catchUpResult.ok"
+                         class="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                      Caught up cleanly — it was
+                      <span x-text="b.catchUpResult && b.catchUpResult.was_behind"></span>
+                      commits behind and is now level with trunk, with your work on top.
+                      Nothing else on your machine was touched. Safe to raise.
+                    </div>
+                    <div x-show="b.catchUpResult && !b.catchUpResult.ok"
+                         class="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      <p x-text="b.catchUpResult && b.catchUpResult.error"></p>
+                      <div x-show="b.catchUpResult && b.catchUpResult.files && b.catchUpResult.files.length" class="mt-2">
+                        <div class="text-xs font-medium mb-1">The files that clash:</div>
+                        <ul class="space-y-0.5">
+                          <template x-for="f in (b.catchUpResult.files || [])" :key="f">
+                            <li class="text-xs font-mono" x-text="f"></li>
+                          </template>
+                        </ul>
+                      </div>
+                      <p class="text-xs mt-2">
+                        Nothing was changed — your checkout is exactly as it was. This one needs a
+                        developer, or is small enough to redo from scratch.
+                      </p>
+                      <button @click="copyText(catchUpCommand(b), 'catch-' + b.branch)"
+                              class="mt-2 px-3 py-1.5 text-xs rounded-md bg-white border border-slate-300 hover:bg-slate-50">
+                        <span x-text="copied === ('catch-' + b.branch) ? 'Copied' : 'Copy the command to do it by hand'"></span>
+                      </button>
+                    </div>
                   </div>
 
                   <div x-show="openBranchAction === ('raise-' + b.branch)" class="mt-3 space-y-2">
                     <div x-show="b.behind > 200" class="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                      This is <span x-text="b.behind"></span> commits behind trunk. Rebase it before
-                      raising, or the diff will be unreadable and CI will fail on things you did not change.
+                      This is <span x-text="b.behind"></span> commits behind trunk, so the diff would
+                      include a lot you never wrote and the build would fail on it. Press
+                      <strong>Catch it up with trunk</strong> above first — it tries the whole thing
+                      for you and says if it cannot.
                     </div>
                     <div>
                       <div class="text-xs text-slate-500 mb-1">Title</div>
@@ -1433,6 +1468,7 @@ function app() {
     branchMeta: { fetched_hours_ago: null, trunk: 'origin/trunk' },
     branchDays: 30,
     summarising: null,
+    catchingUp: null,
     raising: null,
     fetchingBranches: false,
     openBranchAction: null,
@@ -1467,6 +1503,25 @@ function app() {
     catchUpCommand(b) {
       const base = (this.branchMeta.trunk || 'origin/trunk').replace('origin/', '');
       return `git fetch origin && git checkout ${b.branch} && git rebase origin/${base}`;
+    },
+
+    async catchUp(b) {
+      this.catchingUp = b.branch;
+      this.myTriageError = '';
+      try {
+        const r = await fetch(`/api/branches/${b.branch}/catch_up`, { method: 'POST' });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          this.myTriageError = data.detail || `Could not catch it up (${r.status})`;
+        } else {
+          b.catchUpResult = data;
+          if (data.ok) { b.behind = 0; b.ahead = data.ahead; }
+        }
+      } catch (e) {
+        this.myTriageError = String(e);
+      } finally {
+        this.catchingUp = null;
+      }
     },
 
     async summariseBranch(b) {

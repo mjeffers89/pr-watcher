@@ -351,3 +351,101 @@ async def summarise(branch):
         )
     return {"ok": True, **data}
 
+def try_catch_up(branch):
+    """Rebase a branch onto trunk in a scratch worktree, or explain why not.
+
+    Done in a throwaway worktree so the user's own checkout is never touched:
+    their current branch, their uncommitted work and their editor state all
+    stay exactly as they were, whatever happens here. A rebase that conflicts
+    is aborted and the worktree removed, so the repo is never left mid-rebase
+    for someone who would not know how to get out of one.
+    """
+    cwd = _repo_dir()
+    if cwd is None:
+        return {"ok": False, "error": "no target_repo_dir configured"}
+    trunk = _trunk(cwd)
+    scratch = Path(cwd) / ".git" / "prw-catchup"
+    subprocess.run(["git", "-C", str(cwd), "worktree", "remove", "--force",
+                    str(scratch)], capture_output=True, text=True)
+
+    r = subprocess.run(
+        ["git", "-C", str(cwd), "worktree", "add", "--detach", str(scratch), branch],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return {"ok": False, "error": (r.stderr or "").strip()[:300]}
+
+    try:
+        before = _git(["rev-list", "--count", f"{branch}..{trunk}"], cwd) or "0"
+        reb = subprocess.run(
+            ["git", "-C", str(scratch), "rebase", trunk],
+            capture_output=True, text=True,
+        )
+        if reb.returncode != 0:
+            conflicts = _git(
+                ["diff", "--name-only", "--diff-filter=U"], scratch
+            ).splitlines()
+            subprocess.run(["git", "-C", str(scratch), "rebase", "--abort"],
+                           capture_output=True, text=True)
+            return {
+                "ok": False,
+                "conflicted": True,
+                "files": conflicts,
+                "behind": int(before),
+                "error": (
+                    "This one cannot be caught up automatically — the same lines "
+                    "have been changed on trunk since, so someone has to decide "
+                    "which version wins."
+                ),
+            }
+
+        new_sha = _git(["rev-parse", "HEAD"], scratch)
+        current = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+
+        if current == branch:
+            # git refuses to move a branch that is checked out, so the rebase
+            # has to happen in the checkout itself. The scratch run above has
+            # already proved it applies cleanly, and a dirty tree is refused
+            # rather than risking someone's uncommitted work.
+            if _git(["status", "--porcelain"], cwd):
+                return {
+                    "ok": False,
+                    "error": (
+                        "This branch is the one you have open, and you have "
+                        "unsaved changes in it. It does rebase cleanly — commit "
+                        "or stash what you are working on and press this again."
+                    ),
+                }
+            reb2 = subprocess.run(
+                ["git", "-C", str(cwd), "rebase", trunk],
+                capture_output=True, text=True,
+            )
+            if reb2.returncode != 0:
+                subprocess.run(["git", "-C", str(cwd), "rebase", "--abort"],
+                               capture_output=True, text=True)
+                return {"ok": False, "error": (reb2.stderr or "").strip()[:300]}
+        else:
+            mv = subprocess.run(
+                ["git", "-C", str(cwd), "branch", "-f", branch, new_sha],
+                capture_output=True, text=True,
+            )
+            if mv.returncode != 0:
+                return {"ok": False, "error": (mv.stderr or "").strip()[:300]}
+        ahead = _git(["rev-list", "--count", f"{trunk}..{branch}"], cwd) or "0"
+        db.log_action(None, "branch_caught_up", f"{branch} (+{before} behind cleared)")
+        return {
+            "ok": True,
+            "was_behind": int(before),
+            "ahead": int(ahead),
+        }
+    finally:
+        subprocess.run(["git", "-C", str(cwd), "worktree", "remove", "--force",
+                        str(scratch)], capture_output=True, text=True)
+
+
+def working_tree_dirty():
+    cwd = _repo_dir()
+    if cwd is None:
+        return False
+    return bool(_git(["status", "--porcelain"], cwd))
+
